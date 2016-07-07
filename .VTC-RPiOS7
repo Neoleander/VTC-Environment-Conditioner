@@ -1,0 +1,171 @@
+#!/bin/bash
+########################################################################################
+# VTC Environment Conditioner (VEC) - Raspberry Pi OS Specific
+# VECOSVer Array: Version, Date, Initials, Description
+export VECVER=( "3.2" "5 July 2016" "NAF" "Enhancements" )
+[[ $1 == "GETVER" ]] && echo "${VECVER[0]}" && exit 0
+########################################################################################
+
+############################################################
+# Variables - Raspberry Pi OS Only
+############################################################
+export DVNVersion="3.5.5"
+export NetworkHome="/etc/network"
+export StorageHome="/root/Storage"
+export AppFile="AppFile_UNAVAILABLE"
+export VTCRoot="/usr/local/dvn"
+export VTCRunning="${VTCRoot}/running/bin/vtc_app"
+export VTCAppl="${VTCRoot}/running/bin/vtc_app/vtc_app"
+export VTCConfigHome="${VTCRoot}/cfg"
+export VTCMonitorFile="${VTCRoot}/monitor/monitor.bash"
+export VTCServiceName="vtc"
+export CFEAppl="CFEAppl_UNAVAILABLE"
+export MyHosts="/etc/hosts"
+export MyResolv="/etc/resolv.conf"
+
+############################################################
+# Functions - RPi Only
+############################################################
+
+######################################################
+# Common file auto vi
+# INPUT: NONE
+# OUTPUT: FileSystem > Vi
+function hosts { vi ${MyHosts}; }
+function resolv { vi ${MyResolv}; }
+
+######################################################
+# Quick directory changers
+# INPUT: NONE
+# OUTPUT: FileSystem > ChangeDirectory
+function chome { cd ${VTCConfigHome}; }
+function nhome { cd ${NetworkHome}; }
+function ahome { cd /etc/hostapd; }
+function whome { cd /etc/wpa_supplicant; }
+
+######################################################
+# Gather the status of the VTC
+# INPUT: NONE
+# OUTPUT: Application > Status
+function vtcstat {
+	CheckObject "PROG" "systemctl" "VTC-Status" || return 1
+	ColorText "INFO" "VTC DRIVER"
+	systemctl status ${VTCServiceName}-driver
+	ColorText "INFO" "VTC APPLICATION"
+	systemctl status ${VTCServiceName}
+}
+
+######################################################
+# Stop the VTC
+# INPUT: NONE
+# OUTPUT: Application > Stop
+function vtcstop {
+	CheckObject "PROG" "systemctl" "VTC-Stop" || return 1
+	ColorText "INFO" "Triggering the VTC to stop..."
+	systemctl stop ${VTCServiceName} && sleep 1
+	ColorText "INFO" "VTC should now be halted.";
+}
+
+######################################################
+# Start the VTC
+# INPUT: NONE
+# OUTPUT: Application > Start
+function vtcstart {
+	CheckObject "PROG" "systemctl" "VTC-Start" || return 1
+	ColorText "INFO" "Triggering the VTC to start..."
+	systemctl start ${VTCServiceName} && sleep 1
+	ColorText "INFO" "VTC should now be running."
+}
+
+######################################################
+# A one shot look at the current IPTABLES firewall
+# INPUT: NONE
+# OUTPUT: NONE
+function ii {
+	[[ $(sysctl net.ipv4.conf.all.forwarding -n) -eq 1 ]] \
+		&& ColorText "INFO" "Forwarding is enabled." \
+		|| ColorText "INFO" "Forwarding is NOT enabled."
+	CheckObject "PROG" "iptables" "ii" \
+		|| return 1
+	CheckObject "PROG" "firewall-cmd" "QUIET" \
+		&& ColorText "INFO" "Detected \"firewalld\", please use \"fwi\" instead." \
+		&& sleep 2
+	ColorText "INFO" "Mangle Table Below"
+	iptables -nvL -t mangle | grep --color=never -v pkts | grep --color=never .
+	ColorText "INFO" "Filter Table Below"
+	iptables -nvL | grep --color=never -v pkts | grep --color=never .
+	ColorText "INFO" "NAT Table Below"
+	iptables -nvL -t nat | grep --color=never -v pkts | grep --color=never .
+}
+
+######################################################
+# An infinite loop of IPTABLES firewall
+# INPUT: NONE
+# OUTPUT: NONE
+function iin {
+	CheckObject "PROG" "iptables" "iin" || return 1
+	[[ $(sysctl net.ipv4.conf.all.forwarding -n) -eq 1 ]] \
+		&& ColorText "INFO" "Forwarding is enabled." \
+		|| ColorText "INFO" "Forwarding is NOT enabled."
+	CounterInc=0
+	while true; do
+		let CounterInc+=1
+		clear
+		echo -e "------------------------------------------------------------------------- ${CounterInc}\n"
+		ColorText "INFO" "# MANGLE TABLE #"
+		iptables -nvL -t mangle | grep --color=never -v pkts | grep --color=never .
+		ColorText "INFO" "# FILTER TABLE #"
+		iptables -nvL | grep --color=never -v pkts | grep --color=never .
+		ColorText "INFO" "# NAT TABLE #"
+		iptables -nvL -t nat | grep --color=never -v pkts | grep --color=never .
+		sleep 2
+	done
+}
+
+######################################################
+# Show details of the firewalld
+# INPUT: NONE
+# OUTPUT: ToScreen
+function fwi {
+	CheckObject "PROG" "firewall-cmd" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Firewall command utility \"firewall-cmd\" could not be found."
+		return 1
+	fi
+
+	# Is the firewall running?
+	if [[ $(firewall-cmd --state) == "running" ]]; then
+		ColorText "INFO" "Firewalld reported running."
+		# List out the firewall information.
+		for EachZone in $(firewall-cmd --get-zones); do
+			firewall-cmd --zone ${EachZone} --list-all | awk 'function green(s){printf "\033[1;32m" s "\033[0m "};function blue(s){printf "\033[1;34m" s "\033[0m "}{if(/^[[:alpha:]]/){if(/active/){print green($0)}else{print blue($0)}}else if(!/ $/&&/ /){print}}'
+		done
+	else
+		ColorText "WARNING" "Firewalld reported a non-running state"
+		return 1
+	fi
+}
+
+######################################################
+# Check the data points of the Pi
+# INPUT: NONE
+# OUTPUT: ToScreen
+function pidata {
+	local PiData ThisData
+	CheckObject "PROG" "vcgencmd" "PiCMD" || return 1
+	for PiData in core sdram_c sdram_i sdram_p; do
+		ThisData=$(vcgencmd measure_volts ${PiData} 2>/dev/null)
+		ColorText "INFO" "${PiData} : ${ThisData:-NONE}"
+	done
+	ThisData=$(vcgencmd measure_temp 2>/dev/null)
+	ColorText "INFO" "Temperature (c) : ${ThisData:-NONE}"
+}
+
+############################################################
+# Source Files
+############################################################
+[[ -f .VTC-Generic ]] && . .VTC-Generic
+
+########################################################################################
+# EOF
+########################################################################################

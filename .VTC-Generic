@@ -1,0 +1,1394 @@
+#!/bin/bash
+########################################################################################
+# VTC Environment Conditioner (VEC)- Generic OS Globals
+# VECGENVer Array: Version, Date, Initials, Description
+export VECVER=( "3.2" "5 July 2016" "NAF" "Enhancements" )
+[[ $1 == "GETVER" ]] && echo "${VECVER[0]}" && exit 0
+########################################################################################
+
+############################################################
+# Main Variables - Generic
+############################################################
+export Normal="0" Gray="29" Red="31" SuperRed="41" Green="32" Yellow="33" Blue="36"
+export PS1="\$(if [[ \$? == 0 ]]; then echo \"\[\e[1;${Green}m\]\u@\h \w>\"; else echo \"(\$?) \[\e[1;${Red}m\]\u@\h \w>\"; fi)\[\e[0;${Normal}m\] "
+export FSHome="${StorageHome}/FileStore"
+export VTCConfigFile="${VTCConfigHome}/vtc_config.jsec"
+export VTCRegFile="${VTCConfigHome}/vtc_reg.jsec"
+export ValidIP="(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+export ValidPrefix="(3[01]|[12][0-9]|[1-9])"
+
+############################################################
+# Helper Functions - Basics
+############################################################
+
+######################################################
+# Output text with color
+# INPUT: TextClass, Text
+# OUTPUT: Return code 0/true or 1/false
+function ColorText {
+	# Gather details.
+	FXHeader="$1"
+	case ${FXHeader} in
+		# Something of interest.
+		"INFO") FXColor="${Green}";;
+		# Something to review, but not an error.
+		"WARNING") FXColor="${Yellow}";;
+		# You screwed up.
+		"ERROR") FXColor="${Red}";;
+		# The script is screwed up.
+		"CRITICAL") FXColor="${SuperRed}";;
+		# How to proceed.
+		"PROMPT") FXColor="${Blue}";;
+		# Huh?
+		*) FXColor="${Gray}";;
+	esac
+	shift 1
+	CommentText="$*"
+
+	# Output.
+	printf "\e[7;${FXColor}m[%-8s]\e[1;${Normal}m %s\n" "${FXHeader}" "${CommentText}"
+}
+
+######################################################
+# Output wait spinner
+# INPUT: SpinClass, Executable
+# OUTPUT: Return code 0/true or 1/false
+function SpinWait {
+	# Variables
+	local Inc=1
+	local ThisLine=""
+	local MyType="$1"
+	local ThisCondition="LOOP"
+	local TimeOut
+	TMPFile="/tmp/DELETE"
+	TMPFile2="/tmp/DELETE2"
+	shift 1
+	local MyExec="$*"
+
+	# Assess the input information.
+	case ${MyType} in
+		"SPINQUIET"*)
+			TimeOut=${MyType##*SPINQUIET}
+			MyType="SPINQUIET"
+			;;
+		"SPIN"*)
+			TimeOut=${MyType##*SPIN}
+			MyType="SPIN"
+			;;
+		*)
+			ColorText "ERROR" "Type error."
+			return 1
+			;;
+	esac
+	[[ ${TimeOut} == "" ]] \
+		&& TimeOut=30
+
+	# Run the program.
+	# This file must exist.
+	echo > ${TMPFile} 2>/dev/null
+	echo > ${TMPFile2} 2>/dev/null
+	if [[ -f ${TMPFile} ]]; then
+		SECONDS=0
+		(echo "$$" > ${TMPFile} && eval "${MyExec}" 2>/dev/null > ${TMPFile2} && echo -e "\nPROCESSCOMPLETEWITHSUCCESS" >> ${TMPFile2} || echo -e "\nPROCESSFAILWITHOUTDATA" > ${TMPFile2} & )
+	else
+		ColorText "ERROR" "File creation problem. (${TMPFile})"
+		return 1
+	fi
+
+	# Run only when "LOOP" and timer has next expired.
+	while [[ ${ThisCondition} == "LOOP" ]]; do
+
+		# Timeout condition checking.
+		if [[ $((TimeOut-SECONDS)) -le 0 ]]; then
+			pkill $(cat ${TMPFile}) > /dev/null 2>/dev/null
+			ThisCondition="TIMEOUT"
+			break
+		fi
+
+		# Write the working line.
+		# Reset the line if required.
+		[[ $((Inc%8)) -eq 0 ]] \
+			&& ThisLine=""
+		ThisLine="${ThisLine}#"
+		let Inc+=1
+		printf "\e[1;${Gray}m[%-8s]\e[1;${Normal}m %s" "${ThisLine[*]}" "Gathering information. (Timeout: $((TimeOut-SECONDS))s)  "
+		sleep 1
+		# Move to left side again.
+		printf '\b%.0s' {1..100}
+
+		# Assess data during.
+		case ${MyType:-ERROR} in
+			"SPIN"|"SPINQUIET")
+				if grep -q "PROCESSCOMPLETEWITHSUCCESS" < ${TMPFile2}; then
+					grep -v "PROCESSCOMPLETEWITHSUCCESS" ${TMPFile2} > ${TMPFile}
+					if [[ $(wc -w < ${TMPFile}) -gt 0 ]]; then
+						ThisCondition="DONENOERROR"
+					else
+						ThisCondition="DONENODATA"
+					fi
+				elif grep -q "PROCESSFAILWITHOUTDATA" < ${TMPFile2}; then
+					ThisCondition="DONEWITHERROR"
+				fi
+				;;
+			*)
+				ColorText "ERROR" "A program error occurred. (MyType=${MyType:-ERROR})"
+				break
+				;;
+		esac
+
+	done && printf "\e[7;${Green}m[%-8s]\e[1;${Normal}m %s\n" "COMPLETE" "The process completed.  (Duration: ${SECONDS}s)"
+
+	# Clean up.
+	sleep 1
+
+	# Assess the output information.
+	case ${MyType} in
+		"SPIN"|"SPINQUIET")
+			if [[ ${ThisCondition} == "DONENOERROR" ]]; then
+				if [[ ${MyType} == "SPINQUIET" ]]; then
+					return 0
+				else
+					cat ${TMPFile}
+					return 0
+				fi
+			elif [[ ${ThisCondition} == "TIMEOUT" ]]; then
+				ColorText "WARNING"  "The process \"${MyExec:0:15}...\" was terminated due to timeout."
+				return 1
+			elif [[ ${ThisCondition} == "DONENODATA" ]]; then
+				ColorText "WARNING" "No data was returned from the process."
+				return 1
+			elif [[ ${ThisCondition} == "DONEWITHERROR" ]]; then
+				ColorText "ERROR" "No data was returned due to process failure."
+				return 1
+			else
+				ColorText "ERROR" "Unknown exit condition."
+				return 1
+			fi
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+######################################################
+# Check program functionality or file availability
+# INPUT: [PROG/FILE], ProgramName/FileName, LogicalName/QUIET
+# OUTPUT: Return code 0/true or 1/false
+function CheckObject {
+
+    function GoToPrint {
+        if [[ ${MyLName} != "QUIET" ]] || [[ ${ListOverride:-FALSE} == "TRUE" ]]; then
+            [[ ${ListOverride:-FALSE} == "TRUE" ]] \
+                && ColorText "WARNING" "Could not find ${MyInput} \"${MyName}\"." \
+                || ColorText "WARNING" "Could not find ${MyInput} \"${MyName}\".  Function \"${MyLName}\" may be unavailable/limited."
+        fi
+    }
+
+	local MyInput="$1"
+	local MyName="$2"
+	local MyLName="$3"
+	if [[ ! ${MyInput} == "" ]] && [[ ! ${MyName} == "" ]] && [[ ! ${MyLName} == "" ]]; then
+
+		if [[ ${MyInput} == "PROG" ]]; then
+
+			which ${MyName} 1>/dev/null 2>/dev/null
+			if [[ $? -eq 0 ]]; then
+				return 0
+			else
+                GoToPrint
+				return 1
+			fi
+
+		elif [[ ${MyInput} == "FILE" ]]; then
+
+			find /${MyName} 1>/dev/null 2>/dev/null
+			if [[ $? -eq 0 ]]; then
+				return 0
+			else
+				GoToPrint
+				return 1
+			fi
+
+		elif [[ ${MyInput} == "VARI" ]]; then
+
+			unset EvalVarExp EvalVarCtx
+			EvalVarExp="${MyName##*=}"
+			EvalVarCtx="$(eval "echo \$${MyName%%=*}" 2>/dev/null)"
+			if [[ ${EvalVarCtx:-NULL} == ${EvalVarExp:-NONE} ]]; then
+				return 0
+			else
+				GoToPrint
+				return 1
+			fi
+
+		else
+
+			ColorText "CRITICAL" "Code error while analyzing \"${MyInput} ${MyName}\", please report."
+			return 1
+
+		fi
+
+	else
+
+		ColorText "CRITICAL" "Code error while analyzing \"${MyInput} ${MyName}\", please report."
+		return 1
+
+	fi
+}
+
+############################################################
+# Helper Functions - Qualifiers
+############################################################
+
+######################################################
+# Elicit a variable response from the user
+# INPUT: Question, DefaultAnswer
+# OUTPUT: UserResponse
+function GetResponse {
+	local InputQuestion="$1"
+	local DefaultAnswer="$2"
+	unset REPLY UserResponse
+
+	# Do not allow blank or passed in NONE to be an answer.
+	while [[ ${UserResponse:-NONE} == "NONE" ]]; do
+
+		# If the question was asked more than once, emphasize it.
+		if [[ ${InputQuestion} == ${LastInputQuestion} ]]; then
+			printf "\e[7;${Red}m[%-8s]\e[${Normal}m %s\n" "TRYAGAIN" "${InputQuestion}"
+		else
+			printf "\e[7;${Blue}m[%-8s]\e[${Normal}m %s\n" "QUESTION" "${InputQuestion}"
+		fi
+
+		# Save the last question so when/if asked again its red.
+		LastInputQuestion="${InputQuestion}"
+
+		# Get the answer.
+		read -p "Response? (Default = \"${DefaultAnswer}\") > "
+		if [[ ${REPLY:-NONE} == "NONE" ]] && [[ ${DefaultAnswer:-NONE} != "NONE" ]]; then
+			UserResponse="${DefaultAnswer}"
+		else
+			UserResponse="${REPLY}"
+		fi
+
+	done
+}
+
+######################################################
+# Elicit a YES or NO from the user
+# INPUT: Question, DefaultAnswer, TimerSeconds [Optional]
+# OUTPUT: Return code 0/true or 1/false
+function GetYorN {
+	local InputQuestion="$1"
+	local DefaultAnswer="$2"
+	[[ $3 != "" ]] \
+		&& TimerVal="-t $3" \
+		|| unset TimerVal
+	unset REPLY
+
+	# Loop until a hit is made.
+	while true; do
+
+		# If the question was asked more than once, emphasize it.
+		if [[ ${InputQuestion} == ${LastInputQuestion} ]]; then
+			printf "\e[7;${Red}m[%-8s]\e[${Normal}m %s (Yes or No)\n" "TRYAGAIN" "${InputQuestion}"
+		else
+			printf "\e[7;${Blue}m[%-8s]\e[${Normal}m %s (Yes or No)\n" "QUESTION" "${InputQuestion}"
+		fi
+
+		# Get the answer.
+		read ${TimerVal} -p "Choice? (Default = \"${DefaultAnswer}\") > "
+
+		# If there was no reply, take the default.
+		[[ ${REPLY:-NONE} == "NONE" ]] \
+			&& REPLY="${DefaultAnswer}"
+
+		# Save the last question so when/if asked again its red.
+		LastInputQuestion=${InputQuestion}
+
+		# Find out which reply was given.
+		case ${REPLY} in
+			Y|YE|YES|YEs|Yes|yes|ye|y) return 0;;
+			N|NO|No|no|n) return 1;;
+		esac
+
+		unset REPLY
+
+	done
+}
+
+######################################################
+# Elicit a selection response from the user
+# INPUT: Question, SelectOptions, DefaultAnswer
+# OUTPUT: UserResponse
+function GetSelection {
+	local InputQuestion="$1"
+	local InputAllowed="$2"
+	local DefaultAnswer="$3"
+	unset REPLY UserResponse
+
+	while true; do
+		# If the user wants to keep the default.
+		if [[ ${DefaultAnswer:-NONE} != "NONE" ]]; then
+			TMP_DefaultAnswer=${DefaultAnswer}
+			GetYorN "${InputQuestion} - Keep default of \"${DefaultAnswer}\"?" "Yes" \
+				&& UserResponse=${TMP_DefaultAnswer} \
+				&& break
+		fi
+
+		# Otherwise.
+		printf "\e[7;${Blue}m[%-8s]\e[${Normal}m %s\n" "QUESTION" "${InputQuestion}"
+		COLUMNS="50"
+		select REPLY in ${InputAllowed:-ERROR}; do
+			case ${InputAllowed} in
+				*"${REPLY:-NOREPLY}"*)
+					UserResponse="${REPLY}"
+					break 2
+					;;
+			esac
+			unset REPLY
+		done
+
+	done
+	unset REPLY
+}
+
+############################################################
+# Functions
+############################################################
+
+######################################################
+# Quick directory changers
+# INPUT: NONE
+# OUTPUT: FileSystem > ChangeDirectory
+function dhome { cd ${VTCRoot} 2>/dev/null || ColorText "CRITICAL" "Cannot change directory to \"${VTCRoot}\"."; }
+function shome { mkdir -p ${FSHome} && cd ${FSHome} 2>/dev/null || ColorText "CRITICAL" "Cannot change directory to \"${FSHome}\"."; }
+function rhome { cd ${VTCRunning} 2>/dev/null || ColorText "CRITICAL" "Cannot change directory to \"${VTCRunning}\"."; }
+function s {
+	local SystemName=$(echo ${1:-SELECT} | awk '{print toupper($0)}' 2>/dev/null)
+	cd ${FSHome}/${SystemName} 2>/dev/null || ColorText "ERROR" "Cannot change directory to \"cd ${FSHome}/${SystemName}\".";
+}
+
+######################################################
+# Update the SSH authorized_keys of a remote location
+# INPUT: UserAndLocation
+# OUTPUT: RemoteFileSystem > UpdateSSH
+function setupssh {
+	# Critical checking.
+	CheckObject "PROG" "ssh" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Critical program \"ssh\" could not be found."
+		return 1
+	fi
+	CheckObject "FILE" "${HOME:-UNKNOWNHOME}/.ssh/id_rsa.pub" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Critical file \"~/.ssh/id_rsa.pub\" could not be found."
+		return 1
+	fi
+
+	if [[ ${1:-ERR} == "ERR" ]]; then
+		ColorText "ERROR" "Must enter user and location \"user@hostname\"."
+		ColorText "INFO" "Proper usage is \"setupssh user@hostname\"."
+		ColorText "INFO" "This program updates a remote host's authorized_keys file for auto ssh login."
+		ColorText "INFO" "Your current user \"${USER:-UNKNOWNUSER}\" has the following (RSA) key..."
+		ColorText "INFO" "$(cat ${HOME:-UNKNOWNHOME}/.ssh/id_rsa.pub)"
+		return 1
+	else
+		local RemoteLocation=$1
+	fi
+
+	ColorText "INFO" "Copying public RSA key to \"${RemoteLocation}\"."
+	cat ~/.ssh/id_rsa.pub | ssh ${RemoteLocation} "mkdir -p ~/.ssh && cat >>  ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys || echo ERROR"
+	if [[ $? -eq 0 ]]; then
+		ColorText "INFO" "Sent public RSA key successfully."
+		ColorText "INFO" "You should now be able to login with \"${USER:-CURRENTUSER}\" to \"${RemoteLocation}\"."
+	else
+		ColorText "ERROR" "Could not send public RSA key - cannot continue."
+		return 1
+	fi
+}
+
+######################################################
+# Transfer a folder/file with tar and compression
+# INPUT: Folder/File, User@IP, [Location]
+# OUTPUT: ToForeignDisk>NewFile
+function xfer {
+	# Critical checking.
+	CheckObject "PROG" "tar" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Critical program \"tar\" could not be found."
+		return 1
+	fi
+	CheckObject "PROG" "ssh" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Critical program \"ssh\" could not be found."
+		return 1
+	fi
+
+	# Check input.
+	local MyData=$1 MyTo MyLocation
+	shift
+	local MyInfo=( $* )
+
+	if [[ ${#MyInfo[*]} -le 0 ]]; then
+		ColorText "ERROR" "Payload \"${MyData:-ERROR}\" could not be transferred."
+		ColorText "INFO" "Proper usage is \"xfer file/folder user@ip/host:[Optional Remote Location] [+]\"."
+		ColorText "INFO" "This program works best with pre-provisioned SSH keys - IE, no password prompt."
+		ColorText "INFO" "EX: Transfer folder into home of dniusr - \"xfer MyFolder/ dniusr@dni123.dispersive.com\"."
+		ColorText "INFO" "EX: Transfer folder into many remote locations - \"xfer MyFolder/ dniusr@dni123.dispersive.com dvn@dni456.dispersive.com:RemoteFolder\"."
+		ColorText "INFO" "EX: Transfer file into RemoteFolder above dniusr - \"xfer MyFile dniusr@dni123.dispersive.com:RemoteFolder\"."
+		return 1
+	fi
+
+	# For each mentioned host.
+	for ((i=0;i<${#MyInfo[*]};i++)); do
+
+		MyTo=${MyInfo[${i}]%%:*}
+		MyLocation=${MyInfo[${i}]#*:}
+		# Validation of entries.
+		[[ ${MyTo} == ${MyLocation} ]] \
+			&& MyLocation=''
+
+		# Transfer.
+		if [[ ${MyData} != "" ]] && [ -f ${MyData} -o -d ${MyData} ]; then
+			ColorText "INFO" "TARing, Compressing, and secure copying to \"${MyTo}\" - You may be prompted for a password."
+			if [[ ${MyLocation} != "" ]]; then
+				# NEEDS WORK
+                # This should ideally not have to TAR each time (might be a big file set)...
+				tar zcf - ${MyData} | ssh ${MyTo} "mkdir -pv ${MyLocation} && cd ${MyLocation} && tar zxvf -" \
+					&& ColorText "INFO" "Success." \
+					|| ColorText "ERROR" "Failed to complete."
+			else
+				tar zcf - ${MyData} | ssh ${MyTo} "tar zxvf -" \
+					&& ColorText "INFO" "Success." \
+					|| ColorText "ERROR" "Failed to complete."
+			fi
+		fi
+
+	done
+}
+
+######################################################
+# Ping a list of IPs for latency understanding
+# INPUT: NumberOfPings/NONE
+# OUTPUT: ToScreen
+function getlat {
+	# Critical checking.
+	CheckObject "PROG" "ping" "QUIET"
+	if [[ $? -ne 0 ]]; then
+			ColorText "CRITICAL" "Critical program \"ping\" could not be found."
+			return 1
+	fi
+
+	# Variables.
+	local PingCount='-c 1' PrintReady="FALSE" Inc=0
+	local PadLine='______________________________' PadLine2='_________'
+	local PrintLine ThisResult ThisResultTimes ThisResultLoss ThisResultInfo
+	PrintLine="Host_[IP]_________________________MIN_ms____AVG_ms____MAX_ms___STDV_ms______LOSS"
+	ColorText "HEADER" "${PrintLine}"
+	if [[ $1 != "" ]]; then
+		PingCount="-c $1"
+	fi
+
+	# Traverse the hosts file.
+	while read EachLine; do
+
+		case "${EachLine}" in
+			"# DISPERSIVECLOUDBEGIN")
+				PrintReady="TRUE"
+				;;
+			"# DISPERSIVECLOUDEND")
+				PrintReady="FALSE"
+				;;
+			*)
+				[[ ${PrintReady} == "TRUE" ]]
+		esac
+
+		# Perform analysis on the results of ping.
+		if [[ ${PrintReady} == "TRUE" ]] && [[ ! ${EachLine} =~ '#' ]] && [[ ! ${EachLine} == '' ]]; then
+
+			unset ThisResultInfo
+			local ThisIP="${EachLine%%[[:blank:]]*}"
+			local ThisHost="${EachLine##*[[:blank:]]}_[${EachLine%%[[:blank:]]*}]"
+			local ThisResult=( $(ping ${PingCount} ${ThisIP} 2>/dev/null | awk '{for(i=1;i<=NF;i++){if($i~"[[:digit:]]%"){gsub("%","");print $i}else if($i~"[[:digit:]]\\/[[:digit:]]"){print $i}}}') )
+			local ThisResultLoss=${ThisResult[0]%\.*}
+			local ThisResultTimes=( ${ThisResult[1]//\// } )
+
+			if [[ ${ThisResultTimes:-ERROR} != "ERROR" ]]; then
+
+				# Warning if the network is inconsistent.
+				[[ ${ThisResultTimes[3]%\.*} -gt 20 ]] \
+					&& ThisResultInfo[0]="INCONSISTENT"
+
+				# Warning if the network is high latency.
+				[[ ${ThisResultTimes[2]%\.*} -gt 120 ]] \
+					&& ThisResultInfo[1]="LATENT"
+
+				# Warning if the network is lossy.
+				[[ ${ThisResultLoss%\.*} -gt 5 ]] \
+					&& ThisResultInfo[2]="HIGH_LOSS"
+
+				# In the case where only one ping was used, no need to show the other values.
+				if [[ ${ThisResultTimes[0]} == ${ThisResultTimes[2]} ]]; then
+					ThisResultTimes[0]=""
+					ThisResultTimes[1]="${ThisResultTimes[1]}"
+					ThisResultTimes[2]=""
+					ThisResultTimes[3]=""
+					ThisResultLoss="${ThisResultLoss}%"
+				else
+					ThisResultTimes[0]="${ThisResultTimes[0]}"
+					ThisResultTimes[1]="${ThisResultTimes[1]}"
+					ThisResultTimes[2]="${ThisResultTimes[2]}"
+					ThisResultTimes[3]="${ThisResultTimes[3]}"
+					ThisResultLoss="${ThisResultLoss}%"
+				fi
+
+				# Build the line.
+				PrintLine=$(printf "%s%s_%s%s_%s%s_%s%s_%s%s_%s%s %s\n" "${ThisHost}" "${PadLine:${#ThisHost}}" "${PadLine2:${#ThisResultTimes[0]}}" "${ThisResultTimes[0]}" "${PadLine2:${#ThisResultTimes[1]}}" "${ThisResultTimes[1]}" "${PadLine2:${#ThisResultTimes[2]}}" "${ThisResultTimes[2]}" "${PadLine2:${#ThisResultTimes[3]}}" "${ThisResultTimes[3]}" "${PadLine2:${#ThisResultLoss}}" "${ThisResultLoss}" "${ThisResultInfo[*]}")
+
+				# Print accordingly.
+				[[ ${#ThisResultInfo[*]} -eq 0 ]] \
+					&& ColorText "INFO" "${PrintLine}" \
+					|| ColorText "WARNING" "${PrintLine}"
+
+			else
+
+				PrintLine=$(printf "%s_%s_________________________________________________ %s\n" "${ThisHost}" "${PadLine:${#ThisHost}}" "NO RESPONSE")
+				ColorText "WARNING" "${PrintLine}"
+
+			fi
+
+			let Inc+=1
+
+		fi
+
+	done < ${MyHosts}
+
+	if [[ ${Inc} -eq 0 ]]; then
+		ColorText "ERROR" "Could not find tag identifier line \"# DISPERSIVECLOUDBEGIN\" in hosts file."
+	else
+		ColorText "INFO" "There were \"${Inc}\" hosts in the list."
+	fi
+}
+
+######################################################
+# Get IP address information
+# INPUT: NONE/QUIET or IP
+# OUTPUT: ExportIP
+function getextip {
+	# Critical checking.
+	CheckObject "PROG" "curl" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Critical program \"curl\" could not be found."
+		return 1
+	fi
+	CheckObject "PROG" "nslookup" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "WARNING" "Program \"nslookup\" could not be found."
+		return 1
+	else
+		RunNS="TRUE"
+	fi
+	CheckObject "PROG" "whois" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "WARNING" "Program \"whois\" could not be found."
+	else
+		RunWI="TRUE"
+	fi
+
+	# Run the IP.
+	local MyIP
+	if [[ $1 == "" ]]; then
+		ColorText "INFO" "Probing for the global IPv4 address - Just a moment."
+		if ! SpinWait "SPINQUIET20" "curl -f http://ipecho.net/plain"; then
+			ColorText "CRITICAL" "All servers failed to return the IP address."
+			return 1
+		fi
+		MyIP=$(cat ${TMPFile} 2>/dev/null)
+	else
+		MyIP="$1"
+	fi
+
+	# Gather data points.
+	if [[ ${MyIP:-UNKNOWN} == "UNKNOWN" ]]; then
+		ColorText "CRITICAL" "The IP is UNKNOWN."
+		return 1
+	elif ! echo ${MyIP} | grep -qoE "${ValidIP}"; then
+		ColorText "CRITICAL" "The IP \"${MyIP}\" is INVALID."
+		return 1
+	else
+		ColorText "INFO" "The IP is \"${MyIP}\"."
+
+		# For Geographic information.
+		ColorText "INFO" "Gathering GEO information on the IP - Just a moment."
+		if ! SpinWait "SPIN10" "curl -f freegeoip.net/xml/${MyIP}"; then
+			ColorText "WARNING" "Trying a different server - Just a moment."
+			if ! SpinWait "SPIN10" "curl -f http://www.telize.com/geoip/${MyIP}"; then
+				ColorText "ERROR" "Could not complete the geo lookup request."
+			fi
+		fi
+
+		# For nameserver information.
+		if [[ ${RunNS:-FALSE} == "TRUE" ]]; then
+			ColorText "INFO" "Gathering NAMESERVER information on the IP - Just a moment."
+			if ! SpinWait "SPINQUIET10" "nslookup ${MyIP}"; then
+				ColorText "ERROR" "Could not complete the nameserver request."
+			else
+				awk '!/^($|[[:space:]]*#)/{print}' ${TMPFile}
+			fi
+
+		fi
+
+		# For whois information.
+		if [[ ${RunWI:-FALSE} == "TRUE" ]]; then
+			ColorText "INFO" "Gathering WHOIS information on the IP - Just a moment."
+			if ! SpinWait "SPINQUIET10" "whois ${MyIP}"; then
+				ColorText "ERROR" "Could not complete the whois request."
+			else
+				awk '!/^($|[[:space:]]*#)/{print}' ${TMPFile}
+			fi
+		fi
+		return 0
+	fi
+}
+
+######################################################
+# Ascertain the IP information from the system
+# INPUT: NONE
+# OUTPUT: NONE
+function GetSystemInterfaces {
+	# Critical checking.
+	CheckObject "PROG" "ifconfig" "ifconfig"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Critical program \"ifconfig\" could not be found."
+	fi
+
+	# Get the interfaces information.
+	local EachIFACE EachEther PadLine
+	PadLine='_________________'
+	for EachIFACE in $(ifconfig -a | awk '/^[a-zA-Z0-9]/{gsub(":","");print $1}' 2>/dev/null | sort); do
+		EachEther=$(ifconfig ${EachIFACE} | grep -oEm1 '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' 2>/dev/null)
+		[[ ${EachEther} == '0:0:0:0:0:0' ]] && continue
+		printf "%s___%s%s\n" "${EachIFACE}" "${PadLine:${#EachIFACE}}" "${EachEther:-NONE}"
+	done
+}
+
+######################################################
+# Enhanced version of PS.
+# INPUT: CommandName
+# OUTPUT: ToScreen > PS
+function pss {
+	CheckObject "PROG" "ps" "ps" \
+		&& ps -eo pid,command \
+			| awk 'BEGIN{i=0}/'"$1"'/&&!/awk/{print; i++;}END{if (i==0) print "[!] No Processes Found." }'
+}
+
+######################################################
+# Enhanced version of LSOF.
+# INPUT: CommandName
+# OUTPUT: ToScreen > LSOF
+function psl {
+	CheckObject "PROG" "lsof" "lsof" \
+		&& lsof -nP \
+			| awk 'BEGIN{i=0}/'"$1"'/&&!/awk/{print; i++;}END{if (i==0) print "[!] No Port/Sockets Found." }'
+}
+
+######################################################
+# Run a scripted version of iftop bandwidth monitor
+# INPUT: NONE
+# OUTPUT: ToScreen > Launch iftop
+function iftopd {
+	# Check for iftop.
+	CheckObject "PROG" "iftop" "iftopd" \
+        return 1
+
+    # Set variables.
+    local UseInterface FilterFor MainOpts='-P -m2M' ExtendedOpts='-o destination -N'
+    local DVNFilterCode='port 5546 or port 5547 or port 5526 or port 5527 or port 5528 or port 5529 or port 5535 or port 5536 or port 5537 or port 49002 or port 49001'
+    local NoDVNFilterCode='! port 5546 and ! port 5547 and ! port 5526 and ! port 5527 and ! port 5528 and ! port 5529 and ! port 5535 and ! port 5536 and ! port 5537 and ! port 49002 and ! port 49001'
+
+    # Loop around until told not to.
+    while true; do
+
+        # Ask for the selection and details of operation.
+        clear
+        ColorText "INFO" "Select a device for iftop to monitor."
+        ColorText "INFO" "If run without filter for DVN traffic, promiscuous mode will set to ON."
+        SystemInterfaces=( $(GetSystemInterfaces) )
+        GetSelection "Which interface device do you wish to use?" "${SystemInterfaces[*]} QUIT"
+        [[ ${UserResponse} == "QUIT" ]] \
+            && return 0 \
+			|| UseInterface=${UserResponse%%___*}
+        GetSelection "Filter for what type of traffic?" "DVN-ONLY NONDVN-ONLY ANY" "DVN-ONLY" \
+			&& FilterFor=${UserResponse}
+
+        if [[ ${FilterFor} == "DVN-ONLY" ]]; then
+            ColorText "INFO" "You will need SUDO/ROOT allowance for this command, please enter your password."
+            sudo iftop ${MainOpts} ${ExtendedOpts} -i "${UseInterface}" -f "${DVNFilterCode}"
+        elif [[ ${FilterFor} == "NONDVN-ONLY" ]]; then
+            ColorText "INFO" "You will need SUDO/ROOT allowance for this command, please enter your password."
+            sudo iftop ${MainOpts} -pi "${UseInterface}" -f "${NoDVNFilterCode}"
+		else
+            ColorText "INFO" "You will need SUDO/ROOT allowance for this command, please enter your password."
+            sudo iftop ${MainOpts} -pi "${UseInterface}"
+        fi
+
+    done
+}
+
+######################################################
+# Change the DVN domain and associated JSEC files
+# INPUT: SystemName
+# OUTPUT: Application > DVNDomainSwitch
+function xdvn {
+
+	function DoXDVNSwitch {
+		ColorText "INFO" "Switching to \"${SystemName}\" DVN system."
+		ColorText "INFO" "Stopping the current VTC and MONITOR."
+		vtcstop
+		ColorText "INFO" "Cleaning up JSEC configurations. (NOT LOCAL)"
+		rm -vf ${VTCConfigHome}/*jsec
+		ColorText "INFO" "Installing new JSEC configurations."
+		cp -vf ${FSHome}/${SystemName}/*jsec ${VTCConfigHome}
+		ColorText "INFO" "Starting VTC."
+		vtcstart
+		echo "${SystemName}" > ${FSHome}/current.txt
+		ColorText "INFO" "Switch complete."
+	}
+
+	# The system name comes from the user.  System names should be stored in upper case.
+	local SystemName=$(echo ${1:-SELECT} | awk '{print toupper($0)}' 2>/dev/null)
+
+	# Ensure the FileStore directory and current.txt is valid.
+	if [[ ! -d ${FSHome:-ERROR} ]]; then
+		ColorText "CRITICAL" "The variable for FileStore at \"${FSHome:-ERROR}\" is not set or set incorrectly."
+		return 1
+	elif [[ -d ${FSHome:-ERROR} ]] && [[ ! -f ${FSHome}/current.txt ]]; then
+		echo "UNKNOWN" > ${FSHome}/current.txt
+		ColorText "WARNING" "The \"current.txt\" was not present, so it was created."
+	fi
+
+	# Look for the current system association.
+	local MySystemName=$(cat ${FSHome}/current.txt 2>/dev/null)
+
+	# Show current system.
+	ColorText "INFO" "The current DVN system association is \"${MySystemName}\"."
+
+	# Check internal linking.
+	[[ -d ${VTCRoot}/running/bin/vtc_app ]] && for EachLink in 'vtc_config.jsec' 'vtc_config.json' 'vtc_reg.jsec' 'vtc_reg.json'; do
+		[[ ! -L ${VTCRoot}/running/bin/vtc_app/${EachLink} ]] \
+			&& ColorText "WARNING" "The linking for \"${EachLink}\" appears to be broken - Attempting fix." \
+			&& cd ${VTCRoot}/running/bin/vtc_app && ln -s ../../../cfg/${EachLink} ${EachLink} && cd - >/dev/null 2>/dev/null
+	done
+
+	# Look for the JSEC files (either).
+	if [[ ! -f ${FSHome}/${SystemName}/vtc_config.jsec ]] && [[ ! -f ${FSHome}/${SystemName}/vtc_reg.jsec ]] || [[ ${SystemName} == "SELECT" ]]; then
+
+		# Ask for selection - Check available first.
+		ColorText "WARNING" "Do not perform a DVN system switch while using DVN."
+		ColorText "INFO" "The following systems are present."
+		local PresentSystems=( $(find ${FSHome}/* -type d -exec basename {} \; 2>/dev/null) )
+		if [[ ${#PresentSystems[*]} -lt 1 ]]; then
+			ColorText "CRITICAL" "Found ZERO systems available in \"${FSHome}\"."
+		else
+			GetSelection "Which DVN system would you like to switch to?" "${PresentSystems[*]}" "NONE"
+			local SystemName="${UserResponse}"
+			DoXDVNSwitch
+		fi
+
+	else
+
+		DoXDVNSwitch
+
+	fi
+}
+
+######################################################
+# Generate the required files for a VTC (JSON/JSEC)
+# INPUT: NONE
+# OUTPUT: ToDisk > JSEC/JSONFiles, Return code 0/true or 1/false
+function vtcgen {
+
+	# The templates of configuration.
+	local TemplateConfig='{"vtc_config":{"vtc_id":"VTCID",VTCIFACES,"cli":"enable","vdn_only":"0","log_dir":"","log_filter":"5","log_master_only":"enabled","ssp_roll_time":"3","max_sessions":"10000","max_connections":"20000","throttle_rate":"50000","throttle_rate_min":"5000","throttle_rate_max":"500000","throttle_adjust":"enable","voip_port_range":"127","vtc_debug_port":"-1","local_net_mask_bits":"24","domains":[{"name":"domain0","dps_list":[DSXINFO]}]}}'
+	local TemplateReg='{"vtc_config":{"dps_server_ip":"DSXIP","dps_config_port":"DSXCONFIG","cli":"enable","throttle_rate":"50000","throttle_rate_min":"5000","throttle_rate_max":"500000","throttle_adjust":"disable","voip_port_range":"16","vtc_debug_port":"47005","vtc_force_data_aes":"none","vtc_pserv_aes":"enable","local_net_mask_bits":"16","firewall":0,"http_debug_port":"8888","driver_dbg_level":2,"must_register":1}}'
+
+	# Get the Interfaces available - into an array. (must add INCLUDED to init)
+	local SystemInterfaces ThisIncluded VTCIFACES CFEReady EachIF ThisLineup ThisMode
+    local VTCID=${HOSTNAME}
+	SystemInterfaces=( $(GetSystemInterfaces) )
+	for ((r=0;r<${#SystemInterfaces[*]};r++)); do
+		# Ensure the Interface has a MAC and append it.
+		[[ ${SystemInterfaces[${r}]##*___} == "NONE" ]] \
+			&& SystemInterfaces[${r}]="" \
+			&& continue \
+			|| SystemInterfaces[${r}]="${SystemInterfaces[${r}]}___INCLUDED"
+	done
+	SystemInterfaces=( ${SystemInterfaces[*]} )
+
+	# Quick check for the CFE APP.
+	clear
+	CheckObject "FILE" "${CFEAppl}" QUIET
+	if [[ $? -eq 0 ]]; then
+		CFEReady="READY"
+	else
+		ColorText "WARNING" "JSON > JSEC conversion utility is not available.  Will output JSON only."
+		CFEReady="NOTREADY"
+	fi
+
+	# Ask what the user wants to create.
+	GetSelection "What would you like to generate?" "REGISTRATION CONFIGURATION BOTH" "REGISTRATION"
+	ThisMode=${UserResponse}
+
+	# Ask for the system name.
+	GetResponse "What is the system name? (EX: LAX01-01)" "NONE"
+	ThisSystemName=$(echo ${UserResponse} | awk '{print toupper($0)}')
+
+	# Do what the user asked.
+	if [[ ${ThisMode} == "CONFIGURATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+
+		# Get information from the user.
+		GetResponse "What would you like the VTC ID to be?" "${VTCID:-NONE}"
+		VTCID=${UserResponse}
+
+		# Ascertain the interfaces to be used.
+		while true; do
+
+			# Make the display cleaner.
+			ColorText "PROMPT" "Please toggle the interfaces you wish to include."
+			COLUMNS="50"
+			select EachIF in ${SystemInterfaces[*]} "DONE"; do
+
+				for ((r=0;r<${#SystemInterfaces[*]};r++)); do
+
+					case "${EachIF:-ERROR}" in
+
+						"${SystemInterfaces[${r}]}")
+							if [[ ${SystemInterfaces[${r}]##*___} == "NOTINCLUDED" ]]; then
+								SystemInterfaces[${r}]="${SystemInterfaces[${r}]/NOTINCLUDED/INCLUDED}"
+							else
+								SystemInterfaces[${r}]="${SystemInterfaces[${r}]/INCLUDED/NOTINCLUDED}"
+							fi
+							clear
+							break 2
+							;;
+
+						"DONE")
+							i=0
+							for ((r=0;r<${#SystemInterfaces[*]};r++)); do
+								if [[ ${SystemInterfaces[${r}]##*___} == "INCLUDED" ]]; then
+									ThisIncluded[${i}]="${SystemInterfaces[${r}]/INCLUDED/PUBLIC}"
+									let i+=1
+								fi
+							done
+							clear
+							if [[ ${#ThisIncluded[*]} -eq 0 ]]; then
+								ColorText "ERROR" "There are no interfaces identified."
+							else
+								break 3
+							fi
+							;;
+
+					esac
+
+				done
+
+				ColorText "WARNING" "Selction \"${REPLY}\" is not valid."
+				sleep 3
+				clear
+				break
+
+			done
+
+		done
+
+		# Ascertain the direction of the interfaces to be used.
+		clear
+		while true; do
+
+			ColorText "PROMPT" "Please toggle the direction of each interface to be used."
+
+			# Make the display cleaner.
+			COLUMNS="50"
+			select EachIF in ${ThisIncluded[*]} "DONE"; do
+
+				for ((r=0;r<${#ThisIncluded[*]};r++)); do
+
+					case "${EachIF:-ERROR}" in
+
+						"${ThisIncluded[${r}]}")
+							if [[ ${ThisIncluded[${r}]##*___} == "PUBLIC" ]]; then
+								ThisIncluded[${r}]="${ThisIncluded[${r}]/PUBLIC/PRIVATE}"
+							else
+								ThisIncluded[${r}]="${ThisIncluded[${r}]/PRIVATE/PUBLIC}"
+							fi
+							clear
+							break 2
+							;;
+
+						"DONE")
+							unset VTCIFACES
+							for ((r=0;r<${#ThisIncluded[*]};r++)); do
+								# Create an array out of the line. 0=Name, 1=MAC, 2=PUBLIC/PRIVATE
+								EachLine=( ${ThisIncluded[${r}]//_/ } )
+								if [[ ${EachLine[2]} == "PUBLIC" ]]; then
+									VTCIFACES[${r}]="\"nic\":\"${EachLine[0]}\",\"mac\":\"${EachLine[1]}\","
+								elif [[ ${EachLine[2]} == "PRIVATE" ]]; then
+									VTCIFACES[${r}]="\"local_nic\":\"${EachLine[0]}\",\"mac\":\"${EachLine[1]}\","
+								fi
+							done
+							break 3
+							;;
+
+					esac
+
+				done
+
+				ColorText "WARNING" "Selction \"${REPLY}\" is not valid."
+				sleep 3
+				clear
+				break
+
+			done
+
+		done
+
+	fi
+
+	# Ascertain the DSX in which to connect to.
+	unset DSXIP VTCCONFIG VTCCALLP DSXCONFIG ConfPlacement
+	local DSXINFO DSXQuantity
+	clear
+
+	GetYorN "Is there a secondary DSX?" "No" \
+		&& DSXQuantity=2 \
+		|| DSXQuantity=1
+
+	# This is for registration.
+	if [[ ${ThisMode} == "REGISTRATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+		until [[ ${DSXCONFIG:-0} -gt 0 ]] && [[ ${DSXCONFIG:-0} -le 65535 ]]; do
+			GetResponse "What is the DSX CONFIG port?" "49012"
+			DSXCONFIG="${UserResponse}"
+		done
+	fi
+
+	# Determine what blanks need filling in.
+	for ((Inc=1;Inc<=${DSXQuantity};Inc++)); do
+
+		# Always needed.
+		until echo "${DSXIP[${Inc}]:-0}" | grep -qoE ${ValidIP}; do
+			GetResponse "What is the DSX #${Inc} IP (DVN SoftSwitch)?" "NONE"
+            [[ ${UserResponse} == $(echo ${UserResponse} | grep -oE ${ValidIP}) ]] \
+			 && DSXIP[${Inc}]="${UserResponse}"
+		done
+
+		# Only for configuration.
+		if [[ ${ThisMode} == "CONFIGURATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+
+			until [[ ${VTCCONFIG[${Inc}]:-0} -gt 0 ]] && [[ ${VTCCONFIG[${Inc}]:-0} -le 65535 ]]; do
+				GetResponse "What is the DSX #${Inc} VTC CONFIG port?" "49001"
+				VTCCONFIG[${Inc}]="${UserResponse}"
+			done
+
+			until [[ ${VTCCALLP[${Inc}]:-0} -gt 0 ]] && [[ ${VTCCALLP[${Inc}]:-0} -le 65535 ]]; do
+				GetResponse "What is the DSX #${Inc} VTC CALLP port?" "49002"
+				VTCCALLP[${Inc}]="${UserResponse}"
+			done
+
+			[[ ${#DSXQuantity[*]} -gt 1 ]] \
+				&& DSXINFO[${Inc}]='{"ip":"'"${DSXIP[${Inc}]}"'","config_port":"'"${VTCCONFIG[${Inc}]}"'","callp_port":"'"${VTCCALLP[${Inc}]}"'"},' \
+				|| DSXINFO[${Inc}]='{"ip":"'"${DSXIP[${Inc}]}"'","config_port":"'"${VTCCONFIG[${Inc}]}"'","callp_port":"'"${VTCCALLP[${Inc}]}"'"}'
+
+		fi
+
+	done
+
+	# Build the new template of vtc_config.json and vtc_reg.json.
+	TemplateConfig="${TemplateConfig/VTCID/${VTCID}}"
+	TemplateConfig="${TemplateConfig/VTCIFACES,/${VTCIFACES[*]}}"
+	TemplateConfig="${TemplateConfig/DSXINFO/${DSXINFO[*]}}"
+	TemplateReg="${TemplateReg/DSXCONFIG/${DSXCONFIG}}"
+	TemplateReg="${TemplateReg/DSXIP/${DSXIP[1]}}"
+
+	# Have the user review and acknowledge.
+	clear
+
+	ColorText "PROMPT" "Please review the following..."
+	if [[ ${ThisMode} == "CONFIGURATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+		ColorText "INFO" "VTC Configuration."
+		echo "${TemplateConfig}"
+	fi
+
+	if [[ ${ThisMode} == "REGISTRATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+		ColorText "INFO" "VTC Registration."
+		echo "${TemplateReg}"
+	fi
+
+	# Where to store this?
+	GetSelection "Place files into which directory?" "/tmp ${FSHome:-/tmp}/${ThisSystemName}" "${FSHome:-/tmp}/${ThisSystemName}"
+	ConfPlacement=${UserResponse}
+
+	# Output.
+	if [[ ${ThisMode} == "CONFIGURATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+		mkdir -p ${ConfPlacement}
+		echo "${TemplateConfig}" > ${ConfPlacement}/vtc_config.json
+	fi
+	if [[ ${ThisMode} == "REGISTRATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+		mkdir -p ${ConfPlacement}
+		echo "${TemplateReg}" > ${ConfPlacement}/vtc_reg.json
+	fi
+
+	# Run the conversion if able.
+	if [[ ${CFEReady} == "READY" ]]; then
+
+		# Configuration JSEC.
+		if [[ ${ThisMode} == "CONFIGURATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+			runcfe ${ConfPlacement}/vtc_config.json ${ConfPlacement}/vtc_config.jsec
+			if [[ $? -eq 0 ]]; then
+				rm -f ${ConfPlacement}/vtc_config.json
+				ColorText "INFO" "Conversion was successful - VTC CONFIG JSEC file resides in \"${ConfPlacement}\"."
+			else
+				ColorText "ERROR" "Conversion was not successful - VTC CONFIG JSON file remains in \"/tmp\"."
+			fi
+		fi
+
+		if [[ ${ThisMode} == "REGISTRATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+			# Registration JSEC.
+			runcfe ${ConfPlacement}/vtc_reg.json ${ConfPlacement}/vtc_reg.jsec
+			if [[ $? -eq 0 ]]; then
+				rm -f ${ConfPlacement}/vtc_reg.json
+				ColorText "INFO" "Conversion was successful - VTC REG JSEC file resides in \"${ConfPlacement}\"."
+			else
+				ColorText "ERROR" "Conversion was not successful - VTC REG JSON file remains in \"/tmp\"."
+			fi
+		fi
+
+	elif [[ ${CFEReady} == "NOTREADY" ]]; then
+
+		if [[ ${ThisMode} == "CONFIGURATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+			ColorText "INFO" "VTC CONFIG JSON file resides in \"${ConfPlacement}\"."
+		fi
+		if [[ ${ThisMode} == "REGISTRATION" ]] || [[ ${ThisMode} == "BOTH" ]]; then
+			ColorText "INFO" "VTC REG JSON file resides in \"${ConfPlacement}\"."
+		fi
+
+	fi
+}
+
+######################################################
+# To register the VTC into the DSX
+# INPUT: Key [Optional], Pin [Optional]
+# OUTPUT: Application > RegisterVTC
+function vtcreg {
+	# Pre-checking.
+	CheckObject "FILE" "${VTCRunning}/vtc_app" \
+		ColorText "ERROR" "VTC runtime binary could not be found." \
+		return 1
+	ps -e | grep -q vtc_app \
+		&& ColorText "WARNING" "VTC appears to be running already."
+
+	local KEY PIN KPReady SysName TestServer ThisPID IsMAC
+	KPReady="NOTREADY"
+	TestServer='66.155.58.175'
+	TestPort='49012'
+
+	# Check for Mac OS specifically.
+	if [[ -f ${HOME:-ERROR}/.VTC-MacOSX ]]; then
+		IsMac='-z'
+	fi
+
+	# Check ports for the user.
+	if CheckObject "PROG" "nc" "QUIET"; then
+		ColorText "INFO" "Testing for connectivity outbound using port \"${TestPort}\"."
+		SpinWait "SPINQUIET20" "echo | nc -n -v ${TestServer} ${TestPort} -w 2 ${IsMac} 2>&1" \
+			&& ColorText "INFO" "Successfully reached outbound on port \"${TestPort}\"." \
+			|| ColorText "WARNING" "Could NOT successfully reach outbound on port \"${TestPort}\" - Registration may fail."
+	fi
+
+	# Command line arguments for automation.
+	if [[ $? -eq 0 ]]; then
+		# Did the user pass in the NAME/KEY/PIN?
+		[[ $1 != "" ]] && SysName=$(echo ${1} | awk '{print toupper($0)}') \
+			&& [[ $2 != "" ]] && KEY=$2 \
+			&& [[ $3 != "" ]] && PIN=$3 \
+			&& KPReady="FULLREADY"
+
+		# If not ready, ask for the details.
+		if [[ ${KPReady} == "NOTREADY" ]]; then
+			ColorText "INFO" "The following systems are present."
+			local PresentSystems=( $(find ${FSHome}/* -type d -exec basename {} \; 2>/dev/null) )
+			if [[ ${#PresentSystems[*]} -lt 1 ]]; then
+				ColorText "CRITICAL" "Found ZERO systems available in \"${FSHome}\"."
+				return 1
+			else
+				GetSelection "Which DVN system would you like to register to?" "${PresentSystems[*]}" "NONE"
+				local SysName="${UserResponse}"
+				[[ ! -f ${FSHome}/${SysName}/vtc_reg.jsec ]] \
+					&& ColorText "ERROR" "The system selected \"${SysName}\" has no registration file present." \
+					&& return 1
+			fi
+			GetResponse "What is the KEY?" "${KEY:-NONE}"
+			KEY=${UserResponse}
+			GetResponse "What is the PIN?" "${PIN:-NONE}"
+			PIN=${UserResponse}
+			KPReady="PARTIALREADY"
+		fi
+
+		# Check for the registration file.  Move to configuration directory.
+		if [[ -f ${FSHome}/${SysName}/vtc_reg.jsec ]]; then
+			# First backup any current configuration files.
+			[[ -f ${VTCConfigHome}/vtc_config.jsec ]] \
+				&& mv -f ${VTCConfigHome}/vtc_config.jsec /tmp/vtc_config.jsec 2>/dev/null
+			[[ -f ${VTCConfigHome}/vtc_reg.jsec ]] \
+				&& mv -f ${VTCConfigHome}/vtc_reg.jsec /tmp/vtc_reg.jsec 2>/dev/null
+			# Now move configurations for registration.
+			if ! cp -f ${FSHome}/${SysName}/vtc_reg.jsec ${VTCConfigHome}; then
+				ColorText "ERROR" "Move of registration failed."
+				return 1
+			fi
+		else
+			ColorText "ERROR" "The system selected \"${SysName}\" has no registration file present."
+			return 1
+		fi
+
+		# Sanity checking.
+		if [[ ${KPReady} == "PARTIALREADY" ]]; then
+			GetYorN "Ready to register the VTC?" "No" \
+				&& KPReady="FULLREADY" \
+				|| return 0
+		fi
+
+		if [[ ${KPReady} == "FULLREADY" ]]; then
+			# Run the registration.
+			ColorText "INFO" "Registering the VTC - Just a moment."
+			(
+				cd ${VTCRunning} >/dev/null
+				./vtc_app -nodriver key=${KEY} pin=${PIN} NODRIVER >/tmp/REGISTRATION 2>&1 &
+				ThisPID=$!
+				cd - >/dev/null
+				SpinWait "SPINQUIET20" "while true; do grep -i 'Registration Successful' /tmp/REGISTRATION && break; sleep 1; done"
+				kill -9 ${ThisPID} 2>/dev/null
+				rm -f /tmp/REGISTRATION
+			)
+			# Check the output.  Config file should have been created.
+			if [[ $? -eq 0 ]] && [[ -f ${VTCConfigHome}/vtc_config.jsec ]]; then
+				mv -f ${VTCConfigHome}/vtc_{config,reg}.jsec ${FSHome}/${SysName}/ 2>/dev/null \
+					&& ColorText "INFO" "Registration is complete.  Switch DVN systems when ready." \
+					|| ColorText "ERROR" "Registration is complete, but could not move JSEC files to \"${FSHome}/${SysName}/\"."
+			else
+				ColorText "ERROR" "Registration failed.  Check the key/pin and try again."
+			fi
+			# Replace whatever was in the configuration directory.
+			mv -f /tmp/vtc_config.jsec ${VTCConfigHome}/vtc_config.jsec 2>/dev/null
+			mv -f /tmp/vtc_reg.jsec ${VTCConfigHome}/vtc_reg.jsec 2>/dev/null
+		else
+			ColorText "INFO" "No action has been taken."
+		fi
+	fi
+}
+
+######################################################
+# To install a banner for SSH sessions
+# INPUT: NONE
+# OUTPUT: ToDisk > BannerFile
+function InstBan {
+
+	function CreateMOTD {
+		echo '           ____  _                           _' > ${MyMOTD}
+		echo '          / __ \(_)________  ___  __________(_)   _____' >> ${MyMOTD}
+		echo '         / / / / / ___/ __ \/ _ \/ ___/ ___/ / | / / _ \' >> ${MyMOTD}
+		echo '        / /_/ / (__  ) /_/ /  __/ /  (__  ) /| |/ /  __/' >> ${MyMOTD}
+		echo '       /_____/_/____/ .___/\___/_/  /____/_/ |___/\___/' >> ${MyMOTD}
+		echo '  ______          _/_/              __            _' >> ${MyMOTD}
+		echo ' /_  __/__  _____/ /_  ____  ____  / /___  ____ _(_)__  _____' >> ${MyMOTD}
+		echo '  / / / _ \/ ___/ __ \/ __ \/ __ \/ / __ \/ __ `/ / _ \/ ___/' >> ${MyMOTD}
+		echo ' / / /  __/ /__/ / / / / / / /_/ / / /_/ / /_/ / /  __(__  )' >> ${MyMOTD}
+		echo '/_/  \___/\___/_/ /_/_/ /_/\____/_/\____/\__, /_/\___/____/' >> ${MyMOTD}
+		echo '                                        /____/' >> ${MyMOTD}
+		GetSelection "What type of VTC is this device?" "SoftSwitch Gateway Client Deflect" "Gateway"
+		echo "Type: DVN ${UserResponse}" >> ${MyMOTD}
+		echo "Provisioned: $(date)" >> ${MyMOTD}
+		echo -e "Provisioned DVN VTC Version: $(cat ${VTCRunning}/version.txt 2>/dev/null || echo UNKNOWN)" >> ${MyMOTD}
+		GetResponse "What is the serial of this device?" "Virtual"
+		echo "Serial: ${UserResponse}" >> ${MyMOTD}
+		GetResponse "What is the admin email of this device?" "support@dispersivegroup.com"
+		echo "Contact: ${UserResponse}" >> ${MyMOTD}
+		ColorText "INFO" "New MOTD has been installed."
+	}
+
+	function UpdateMOTD {
+		GetResponse "Your name or initials?"
+		local MyName="${UserResponse}"
+		GetResponse "What is the note you would like to add?"
+		local MyNote="${UserResponse}"
+		local MyDate=$(date +"%d%m%y")
+		local MyNote="[${MyDate}-${MyName}] [${MyNote}]"
+		GetYorN "Ready to write...\"${MyNote}\"?" "Yes" \
+			&& echo "Notes: ${MyNote}" >> ${MyMOTD} \
+			|| ColorText "INFO" "No changes were made."
+	}
+
+	function CreateSSHBanner {
+			echo '!!!!!!!!!!!!!!!!!!!!!! NOTICE !!!!!!!!!!!!!!!!!!!!!!' > ${MyBanner}
+			echo '            This is a private computer.' >> ${MyBanner}
+			echo '  Repeated login attempts will result in an IP Ban.' >> ${MyBanner}
+			echo '              All actions are logged.' >> ${MyBanner}
+			echo '!!!!!!!!!!!!!!!!!!!!!! NOTICE !!!!!!!!!!!!!!!!!!!!!!' >> ${MyBanner}
+			ColorText "INFO" "New SSH banner has been installed - Restart SSHD to implement."
+
+			# Remove existing banner directive in SSH and add it back.
+			sed -i '/Banner/d' ${MySSHConf} \
+				&& echo "Banner ${MyBanner}" >> ${MySSHConf} \
+				|| ColorText "ERROR" "New SSH banner could not be activated.  There was a problem writing changes to the SSH config."
+	}
+
+	CheckObject "PROG" "whoami" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Required program \"whoami\" was not found."
+		return 1
+	fi
+
+	local MyMOTD MyBanner MySSHConf
+
+	# Must be root to do any of this.
+	if [[ $(whoami 2>/dev/null) == "root" ]]; then
+
+		# Locations and files.
+		ColorText "INFO" "Searching for required files - just a moment."
+		MyMOTD="/etc/motd"
+		MyBanner="/etc/dispersivebanner"
+		MySSHConf="$(find /etc -name sshd_config 2>/dev/null)"
+
+		# Check for MOTD, but create if it does not exist.
+		CheckObject "FILE" "${MyMOTD}" "QUIET"
+		if [[ $? -ne 0 ]]; then
+			ColorText "WARNING" "The \"MOTD\" file did not exist, so creating it."
+			touch ${MyMOTD}
+		fi
+
+		GetSelection "What would you like to do?" "UpdateMOTD CreateMOTD" "NONE"
+		if [[ ${UserResponse} == "UpdateMOTD" ]]; then
+			UpdateMOTD
+		elif [[ ${UserResponse} == "CreateMOTD" ]]; then
+			# Check for sshd config.
+			CheckObject "FILE" "${MySSHConf}" "QUIET"
+			if [[ $? -eq 0 ]]; then
+				CreateSSHBanner
+			else
+				ColorText "WARNING" "New SSH banner could not be activated.  The configuration file did not exist."
+			fi
+			CreateMOTD
+		fi
+
+		ColorText "INFO" "Done."
+
+	else
+
+		ColorText "ERROR" "Username = \"$(whoami)\".  Must be \"root\" (or use SUDO) to perform banner updates."
+
+	fi
+}
+
+######################################################
+# To script the IP configuration tasks
+# INPUT: NONE
+# OUTPUT: ToDisk > NetworkFiles
+function ModNet {
+	# Pre-check for Mac OSX.
+	if [[ -d /System/Library/PreferencePanes/Network.prefPane ]]; then
+		open /System/Library/PreferencePanes/Network.prefPane
+		return 0
+	fi
+
+	# Linux only here.
+	CheckObject "FILE" "${NetworkHome}" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Network home \"${NetworkHome}\" cannot be found."
+		return 1
+	fi
+
+	# Debian derivatives have "interfaces" file instead of ifcfg-XYZ.
+	if [[ -f ${NetworkHome}/interfaces ]]; then
+		vi ${NetworkHome}/interfaces
+		return 0
+	fi
+
+	# Get the Interfaces available into an array and run.
+	local SystemInterfaces
+	ColorText "INFO" "Configuration changes will occur in \"${NetworkHome}\"."
+	SystemInterfaces=( $(GetSystemInterfaces) )
+
+	# Get the selection.
+	while true; do
+
+		GetSelection "Select a device you wish to modify." "${SystemInterfaces[*]} QUIT" "NONE"
+
+		# Ensure it is listed in the directory.
+		if [[ -s ${NetworkHome}/ifcfg-${UserResponse%%___*} ]]; then
+			ColorText "INFO" "Now viewing \"${UserResponse%%___*}\"."
+			sleep 2
+			vi ${NetworkHome}/ifcfg-${UserResponse%%___*}
+		elif [[ ${UserResponse} == "QUIT" ]]; then
+			return 0
+		else
+			ColorText "ERROR" "This device is not listed in networking home \"${NetworkHome}/ifcfg-${UserResponse%%_*}\"."
+			continue
+		fi
+
+	done
+}
+
+######################################################
+# List the capabilities of the script
+# INPUT: NONE
+# OUTPUT: NONE
+function list {
+    # For debug.
+    local ListOverride
+    if [[ $1 == "all" ]]; then
+        ColorText "WARNING" "QUIET override turned ON."
+        ListOverride=TRUE
+    else
+        ListOverride=FALSE
+    fi
+    ColorText "INFO" "VTC-Environment-Conditioner (VEC) version \"${VECVER[0]:-UNKNOWN}\"."
+	ColorText "INFO" "DVN VTC version \"$(cat ${VTCRunning}/version.txt 2>/dev/null || echo UNKNOWN)\"."
+	ColorText "INFO" "Current DVN system association is \"$(cat ${FSHome}/current.txt 2>/dev/null || echo UNKNOWN)\"."
+	CheckObject "FILE" "${VTCConfigFile}" "VTC-SubSystem"
+	ColorText "list" "Show this menu of available directives."
+	CheckObject "FILE" "${NetworkHome}" "QUIET" && ColorText "nhome" "Linux Networking home"
+	CheckObject "FILE" "${VTCConfigHome}" "VTC-Home" && ColorText "chome" "VTC config home"
+	CheckObject "FILE" "${StorageHome}" "Storage-Home" && ColorText "shome" "Storage home"
+	CheckObject "FILE" "${VTCAppl}" "dhome" && ColorText "dhome" "DVN home"
+	CheckObject "FILE" "${VTCRoot}" "QUIET" && ColorText "rhome" "DVN current home"
+	CheckObject "FILE" "${VTCAppl}" "xdvn" && ColorText "xdvn [Y]" "Change DVN system association to [Y]"
+	CheckObject "FILE" "${VTCAppl}" "vtcstop" && ColorText "vtcstop" "Stop the VTC"
+	CheckObject "FILE" "${VTCAppl}" "vtcstart" && ColorText "vtcstart" "Start the VTC"
+	CheckObject "FILE" "${VTCAppl}" "vtcstat" && ColorText "vtcstat" "Status of the VTC"
+	CheckObject "FILE" "${CFEAppl}" "QUIET" && ColorText "vtcgen" "Create the JSON-JSEC files"
+	CheckObject "FILE" "${VTCMonitorFile}" "QUIET" && ColorText "vtcreg" "Register the VTC to the DSX [with (SysName) (KEY) (PIN)]"
+	CheckObject "PROG" "vcgencmd" "QUIET" && ColorText "pidata" "Get information on runstate of the Raspberry Pi"
+	CheckObject "PROG" "curl" "curl" && ColorText "getextip" "Get the Internet side IP"
+	CheckObject "PROG" "ssh" "ssh" && ColorText "setupssh" "Setup password-less login to a remote host"
+	CheckObject "PROG" "ps" "pss" && ColorText "ps[l/s]" "CLI [LSOF/PS] lookup utility"
+	CheckObject "PROG" "iftop" "iftopd" && ColorText "iftop[d]" "CLI graphical network utility [scripted]"
+	CheckObject "PROG" "firewall-cmd" "QUIET" && ColorText "fwi" "Show firewalld information"
+	CheckObject "PROG" "iptables" "QUIET" && ColorText "ii[n]" "Show IPTABLES Filter and NAT tables once [continuous]"
+	CheckObject "PROG" "iptraf" "QUIET" && ColorText "iptraf" "CLI graphical network utility"
+	CheckObject "PROG" "vi" "hosts" && ColorText "hosts" "View and edit the hosts file"
+	CheckObject "PROG" "vi" "resolv" && ColorText "resolv" "View and edit the resolv file"
+	CheckObject "PROG" "ssh" "QUIET" && ColorText "xfer" "Transfer a file/folder with compression"
+	CheckObject "PROG" "ping" "QUIET" && ColorText "getlat" "Show latency towards nodes mentioned in hosts file"
+	CheckObject "FILE" "${NetworkHome}" "QUIET" && [[ ! -f .VTC-RPiOS7 ]] && ColorText "InstNet" "Install networking configuration"
+	ColorText "ModNet" "Modify the current networking configuration"
+	CheckObject "PROG" "whoami" "QUIET" && [[ ! -f .VTC-MacOSX ]] && ColorText "InstBan" "Install Dispersive banners"
+	CheckObject "FILE" "${HOME:-ERROR}/.VTC-CentOS7" "QUIET" \
+		&& ColorText "fwBuild" "Create FirewallD syntax from input rules"
+	CheckObject "FILE" "${HOME:-ERROR}/.VTC-MacOSX" "QUIET" && ! CheckObject "PROG" "brew" "QUIET" \
+		&& ColorText "InstBrew" "Install BREW for OSX"
+	return 0
+}
+
+########################################################################################
+# EOF
+########################################################################################

@@ -1,0 +1,195 @@
+#!/bin/bash
+########################################################################################
+# VTC Environment Conditioner (VEC) - CentOS6 Specific
+# VECOSVer Array: Version, Date, Initials, Description
+export VECVER=( "3.2" "5 July 2016" "NAF" "Enhancements" )
+[[ $1 == "GETVER" ]] && echo "${VECVER[0]}" && exit 0
+########################################################################################
+
+############################################################
+# Variables - CentOS 6 Only
+############################################################
+export DVNVersion="3.5.5"
+export NetworkHome="/etc/sysconfig/network-scripts"
+export StorageHome="/root/Storage"
+export AppFile="AppFile_UNAVAILABLE"
+export VTCRoot="/usr/local/dvn"
+export VTCRunning="${VTCRoot}/running/bin/vtc_app"
+export VTCAppl="${VTCRoot}/running/bin/vtc_app/vtc_app"
+export VTCConfigHome="${VTCRoot}/cfg"
+export VTCMonitorFile="${VTCRoot}/monitor/monitor.bash"
+export VTCServiceName="VTCServiceName_UNAVAILABLE"
+export CFEAppl="${StorageHome}/DVNDeploy-${DVNVersion}/CFE_APP/cfe_app"
+export MyHosts="/etc/hosts"
+export MyResolv="/etc/resolv.conf"
+
+############################################################
+# Functions - CentOS 6 Only
+############################################################
+
+######################################################
+# Common file auto vi
+# INPUT: NONE
+# OUTPUT: FileSystem > Vi
+function hosts { vi ${MyHosts}; }
+function resolv { vi ${MyResolv}; }
+
+######################################################
+# Quick directory changers
+# INPUT: NONE
+# OUTPUT: FileSystem > ChangeDirectory
+function chome { cd ${VTCConfigHome}; }
+function nhome { cd ${NetworkHome}; }
+
+######################################################
+# Run CFE to generate a JSEC from a JSON
+# INPUT: NONE
+# OUTPUT: ToDisk > JSEC, Return code 0/true or 1/false
+function runcfe {
+	if [[ -f ${CFEAppl} ]]; then
+		${CFEAppl} $* \
+			&& return 0 \
+			|| return 1
+	else
+		ColorText "ERROR" "Could not find \"${CFEAppl}\"."
+		return 1
+	fi
+}
+
+######################################################
+# Gather the status of the VTC
+# INPUT: NONE
+# OUTPUT: Application > Status
+function vtcstat {
+	CheckObject "PROG" "ps" "VTC-Status" || return 1
+	ColorText "INFO" "VTC APPLICATION"
+	ps aux | egrep 'vtc_app|monitor.bash' | grep -v 'grep'
+}
+
+######################################################
+# Stop the VTC
+# INPUT: NONE
+# OUTPUT: Application > Stop
+function vtcstop {
+	CheckObject "PROG" "service" "VTC-Stop" || return 1
+	ColorText "INFO" "Triggering the VTC to stop..."
+	service stop dvnvtc && sleep 1
+	ColorText "INFO" "VTC should now be halted.";
+}
+
+######################################################
+# Start the VTC
+# INPUT: NONE
+# OUTPUT: Application > Start
+function vtcstart {
+	CheckObject "PROG" "service" "VTC-Start" || return 1
+	ColorText "INFO" "Triggering the VTC to start..."
+	service start dvnvtc
+	ColorText "INFO" "VTC should now be running."
+}
+
+######################################################
+# A one shot look at the current IPTABLES firewall
+# INPUT: NONE
+# OUTPUT: NONE
+function ii {
+	[[ $(sysctl net.ipv4.conf.all.forwarding -n) -eq 1 ]] \
+		&& ColorText "INFO" "Forwarding is enabled." \
+		|| ColorText "INFO" "Forwarding is NOT enabled."
+	CheckObject "PROG" "iptables" "ii" || return 1
+	ColorText "INFO" "Mangle Table Below"
+	iptables -nvL -t mangle | grep --color=never -v pkts | grep --color=never .
+	ColorText "INFO" "Filter Table Below"
+	iptables -nvL | grep --color=never -v pkts | grep --color=never .
+	ColorText "INFO" "NAT Table Below"
+	iptables -nvL -t nat | grep --color=never -v pkts | grep --color=never .
+}
+
+######################################################
+# An infinite loop of IPTABLES firewall
+# INPUT: NONE
+# OUTPUT: NONE
+function iin {
+	CheckObject "PROG" "iptables" "iin" || return 1
+	[[ $(sysctl net.ipv4.conf.all.forwarding -n) -eq 1 ]] \
+		&& ColorText "INFO" "Forwarding is enabled." \
+		|| ColorText "INFO" "Forwarding is NOT enabled."
+	CounterInc=0
+	while true; do
+		let CounterInc+=1
+		clear
+		echo -e "------------------------------------------------------------------------- ${CounterInc}\n"
+		ColorText "INFO" "# MANGLE TABLE #"
+		iptables -nvL -t mangle | grep --color=never -v pkts | grep --color=never .
+		ColorText "INFO" "# FILTER TABLE #"
+		iptables -nvL | grep --color=never -v pkts | grep --color=never .
+		ColorText "INFO" "# NAT TABLE #"
+		iptables -nvL -t nat | grep --color=never -v pkts | grep --color=never .
+		sleep 2
+	done
+}
+
+######################################################
+# To install basic networking files in CentOS6
+# INPUT: NONE
+# OUTPUT: ToDisk > NetworkFiles
+function InstNet {
+	CheckObject "FILE" "${NetworkHome}" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Network home \"${NetworkHome}\" cannot be found."
+		return 1
+	fi
+
+	# Confirm go-ahead.
+	GetYorN "About to create network configs for available devices, continue?" "No"
+	if [[ $? -ne 0 ]]; then
+		ColorText "INFO" "No changes have been made."
+		return 0
+	fi
+
+	# Get the Interfaces available - into an array and run.
+	local ThisSystem
+	ColorText "INFO" "Configuration changes will occur in \"${NetworkHome}\"."
+	ThisSystem=( $(GetSystemInterfaces) )
+	for ((r=0;r<${#ThisSystem[*]};r++)); do
+
+		# Lo is not needed for this function.
+		[[ ${ThisSystem[${r}]%%___*} == "lo" ]] && continue
+
+		# For BASE.
+		if [[ -f ${NetworkHome}/ifcfg-${ThisSystem[${r}]%%___*} ]]; then
+			ColorText "WARNING" "Base configurations for \"${ThisSystem[${r}]%%___*}\" exist, bypassing."
+		else
+			echo -e "NAME=${ThisSystem[${r}]%%___*}\nDEVICE=${ThisSystem[${r}]%%___*}\nHWADDR=${ThisSystem[${r}]##*___}\nTYPE=Ethernet\nNM_CONTROLLED=no\nIPV4_FAILURE_FATAL=no\nIPV6INIT=no\nONBOOT=yes\nBOOTPROTO=dhcp\n#BOOTPROTO=none\n#IPADDR=A.B.C.D\n#NETMASK=A.B.C.D\n#PEERDNS=yes\n#DNS1=8.8.8.8\n#DNS2=8.8.4.4" > ${NetworkHome}/ifcfg-${ThisSystem[${r}]%%___*}
+			ColorText "INFO" "Default base configurations for \"${ThisSystem[${r}]%%___*}\" have been created."
+		fi
+
+		# For ROUTE.
+		if [[ -f ${NetworkHome}/route-${ThisSystem[${r}]%%___*} ]]; then
+			ColorText "WARNING" ">> Route configurations for \"${ThisSystem[${r}]%%___*}\" exist, bypassing."
+		else
+			echo -e "#default via A.B.C.D dev ${ThisSystem[${r}]%%___*}" > ${NetworkHome}/route-${ThisSystem[${r}]%%___*}
+			echo -e "#default via A.B.C.D dev ${ThisSystem[${r}]%%___*} table abc" >> ${NetworkHome}/route-${ThisSystem[${r}]%%___*}
+			echo -e "#A.B.C.D/XY via A.B.C.D dev ${ThisSystem[${r}]%%___*} table abc" >> ${NetworkHome}/route-${ThisSystem[${r}]%%___*}
+			ColorText "INFO" "Default route configurations for \"${ThisSystem[${r}]%%___*}\" have been created."
+		fi
+
+		# For RULE.
+		if [[ -f ${NetworkHome}/rule-${ThisSystem[${r}]%%___*} ]]; then
+			ColorText "WARNING" "Rule configurations for \"${ThisSystem[${r}]%%___*}\" exist, bypassing."
+		else
+			echo -e "#from A.B.C.D/XY table abc" >> ${NetworkHome}/rule-${ThisSystem[${r}]%%___*}
+			ColorText "INFO" "Default rule configurations for \"${ThisSystem[${r}]%%___*}\" have been created."
+		fi
+
+	done
+}
+
+############################################################
+# Source Files
+############################################################
+[[ -f .VTC-Generic ]] && . .VTC-Generic
+
+########################################################################################
+# EOF
+########################################################################################

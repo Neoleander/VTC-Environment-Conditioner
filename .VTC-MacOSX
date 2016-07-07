@@ -1,0 +1,117 @@
+#!/bin/bash
+########################################################################################
+# VTC Environment Conditioner (VEC) - MacOSX Specific
+# VECOSVer Array: Version, Date, Initials, Description
+export VECVER=( "3.2" "5 July 2016" "NAF" "Enhancements" )
+[[ $1 == "GETVER" ]] && echo "${VECVER[0]}" && exit 0
+########################################################################################
+
+############################################################
+# Variables - MacOSX Only
+############################################################
+export DVNVersion="3.5.5"
+export NetworkHome='NetworkHome_UNAVAILABLE'
+export StorageHome="${HOME}/Documents"
+export AppFile="/Applications/DVNApp.app"
+export VTCRoot="${AppFile}/Contents/MacOS/vtc_app"
+export VTCRunning="${AppFile}/Contents/MacOS/vtc_app"
+export VTCAppl="${VTCRoot}/vtc_app"
+export VTCConfigHome="${VTCRoot}"
+export VTCMonitorFile="VTCMonitorFile_UNAVAILABLE"
+export VTCServiceName="VTCServiceName_UNAVAILABLE"
+export CFEAppl="${StorageHome}/CFE/cfe_app"
+export MyHosts="/private/etc/hosts"
+export MyResolv="/etc/resolv.conf"
+
+############################################################
+# Functions - MacOSX Only
+############################################################
+
+######################################################
+# BREW installer
+# INPUT: Check? [Optional], NONE
+# OUTPUT: ToDisk > BrewApp
+function InstBrew {
+	CheckObject "PROG" "ruby" "Install-Brew" || return 1
+	ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
+}
+
+######################################################
+# Common file auto vi
+# INPUT: NONE
+# OUTPUT: FileSystem > Vi
+function hosts {
+	CheckObject "PROG" "dscacheutil" "Edit-Hosts"
+	sudo vi /private/etc/hosts
+	sudo dscacheutil -flushcache 2>/dev/null
+}
+function hgrep {
+	sudo grep -i $* /private/etc/hosts
+}
+function resolv {
+	CheckObject "PROG" "dscacheutil" "Edit-Resolv"
+	sudo vi /var/run/resolv.conf
+	dscacheutil -flushcache 2>/dev/null
+}
+
+######################################################
+# Quick directory changers
+# INPUT: NONE
+# OUTPUT: FileSystem > ChangeDirectory
+function chome { cd ${VTCConfigHome}; }
+
+######################################################
+# Gather the status of the VTC
+# INPUT: NONE
+# OUTPUT: Application > Status
+function vtcstat {
+	pss vtc_app
+}
+
+######################################################
+# Run CFE to generate a JSEC from a JSON
+# INPUT: NONE
+# OUTPUT: ToDisk > JSEC, Return code 0/true or 1/false
+function runcfe {
+	if [[ -f ${CFEAppl} ]]; then
+		${CFEAppl} $* \
+			&& return 0 \
+			|| return 1
+	else
+		ColorText "ERROR" "Could not find \"${CFEAppl}\"."
+		return 1
+	fi
+}
+
+######################################################
+# Stop the VTC
+# INPUT: NONE
+# OUTPUT: Application > Stop
+function vtcstop {
+	CheckObject "PROG" "pkill" "VTC-Stop" || return 1
+	ColorText "INFO" "Triggering the DAEMON to stop..."
+	pkill DVNApp && sleep 3
+	ColorText "INFO" "Triggering the VTC to stop..."
+	pkill vtc_app && sleep 3
+	ColorText "INFO" "VTC should now be halted. (vtcstat to check)";
+}
+
+######################################################
+# Start the VTC
+# INPUT: NONE
+# OUTPUT: Application > Start
+function vtcstart {
+	CheckObject "PROG" "open" "VTC-Start" || return 1
+	ColorText "INFO" "Triggering the VTC to start..."
+    open -F -j -g ${AppFile} && sleep 1
+	ColorText "INFO" "VTC should now be running."
+}
+
+############################################################
+# Source Files
+############################################################
+[[ -f .VTC-Generic ]] && . .VTC-Generic
+
+########################################################################################
+# EOF
+########################################################################################

@@ -1,0 +1,423 @@
+#!/bin/bash
+########################################################################################
+# VTC Environment Conditioner (VEC) - CentOS7 Specific
+# VECOSVer Array: Version, Date, Initials, Description
+export VECVER=( "3.2" "5 July 2016" "NAF" "Enhancements" )
+[[ $1 == "GETVER" ]] && echo "${VECVER[0]}" && exit 0
+########################################################################################
+
+############################################################
+# Variables - CentOS 7 Only
+############################################################
+export DVNVersion="3.5.5"
+export NetworkHome="/etc/sysconfig/network-scripts"
+export StorageHome="/root/Storage"
+export AppFile="AppFile_UNAVAILABLE"
+export VTCRoot="/usr/local/dvn"
+export VTCRunning="${VTCRoot}/running/bin/vtc_app"
+export VTCAppl="${VTCRoot}/running/bin/vtc_app/vtc_app"
+export VTCConfigHome="${VTCRoot}/cfg"
+export VTCMonitorFile="${VTCRoot}/monitor/monitor.bash"
+export VTCServiceName="vtc"
+export CFEAppl="${StorageHome}/DVNDeploy-${DVNVersion}/CFE_APP/cfe_app"
+export MyHosts="/etc/hosts"
+export MyResolv="/etc/resolv.conf"
+
+############################################################
+# Functions - CentOS 7 Only
+############################################################
+
+######################################################
+# Common file auto vi
+# INPUT: NONE
+# OUTPUT: FileSystem > Vi
+function hosts { vi ${MyHosts}; }
+function resolv { vi ${MyResolv}; }
+
+######################################################
+# Quick directory changers
+# INPUT: NONE
+# OUTPUT: FileSystem > ChangeDirectory
+function chome { cd ${VTCConfigHome}; }
+function nhome { cd ${NetworkHome}; }
+
+######################################################
+# Run CFE to generate a JSEC from a JSON
+# INPUT: NONE
+# OUTPUT: ToDisk > JSEC, Return code 0/true or 1/false
+function runcfe {
+	if [[ -f ${CFEAppl} ]]; then
+		${CFEAppl} $* \
+			&& return 0 \
+			|| return 1
+	else
+		ColorText "ERROR" "Could not find \"${CFEAppl}\"."
+		return 1
+	fi
+}
+
+######################################################
+# Gather the status of the VTC
+# INPUT: NONE
+# OUTPUT: Application > Status
+function vtcstat {
+	CheckObject "PROG" "systemctl" "VTC-Status" \
+		|| return 1
+	ColorText "INFO" "VTC DRIVER"
+	systemctl status ${VTCServiceName}-driver
+	ColorText "INFO" "VTC APPLICATION"
+	systemctl status ${VTCServiceName}
+}
+
+######################################################
+# Stop the VTC
+# INPUT: NONE
+# OUTPUT: Application > Stop
+function vtcstop {
+	CheckObject "PROG" "systemctl" "VTC-Stop" \
+		|| return 1
+	ColorText "INFO" "Triggering the VTC to stop..."
+	systemctl stop ${VTCServiceName} && sleep 1
+	systemctl stop ${VTCServiceName}-driver && sleep 1
+	ColorText "INFO" "VTC should now be halted.";
+}
+
+######################################################
+# Start the VTC
+# INPUT: NONE
+# OUTPUT: Application > Start
+function vtcstart {
+	CheckObject "PROG" "systemctl" "VTC-Start" \
+		|| return 1
+	ColorText "INFO" "Triggering the VTC to start..."
+	systemctl start ${VTCServiceName}-driver
+	systemctl start ${VTCServiceName}
+	ColorText "INFO" "VTC should now be running."
+}
+
+######################################################
+# A one shot look at the current IPTABLES firewall
+# INPUT: NONE
+# OUTPUT: ToScreen
+function ii {
+	[[ $(sysctl net.ipv4.conf.all.forwarding -n) -eq 1 ]] \
+		&& ColorText "INFO" "Forwarding is enabled." \
+		|| ColorText "INFO" "Forwarding is NOT enabled."
+	CheckObject "PROG" "iptables" "ii" \
+		|| return 1
+	CheckObject "PROG" "firewall-cmd" "QUIET" \
+		&& ColorText "INFO" "Detected \"firewalld\", please use \"fwi\" instead." \
+		&& sleep 2
+	ColorText "INFO" "Mangle Table Below"
+	iptables -nvL -t mangle | grep --color=never -v pkts | grep --color=never .
+	ColorText "INFO" "Filter Table Below"
+	iptables -nvL | grep --color=never -v pkts | grep --color=never .
+	ColorText "INFO" "NAT Table Below"
+	iptables -nvL -t nat | grep --color=never -v pkts | grep --color=never .
+}
+
+######################################################
+# An infinite loop of IPTABLES firewall
+# INPUT: NONE
+# OUTPUT: ToScreen
+function iin {
+	CheckObject "PROG" "iptables" "iin" \
+		|| return 1
+	CheckObject "PROG" "firewall-cmd" "QUIET" \
+		&& ColorText "INFO" "Detected \"firewalld\", please use \"fwi\" instead." \
+		&& sleep 2
+	[[ $(sysctl net.ipv4.conf.all.forwarding -n) -eq 1 ]] \
+		&& ColorText "INFO" "Forwarding is enabled." \
+		|| ColorText "INFO" "Forwarding is NOT enabled."
+	CounterInc=0
+	while true; do
+		let CounterInc+=1
+		clear
+		echo -e "------------------------------------------------------------------------- ${CounterInc}\n"
+		ColorText "INFO" "# MANGLE TABLE #"
+		iptables -nvL -t mangle | grep --color=never -v pkts | grep --color=never .
+		ColorText "INFO" "# FILTER TABLE #"
+		iptables -nvL | grep --color=never -v pkts | grep --color=never .
+		ColorText "INFO" "# NAT TABLE #"
+		iptables -nvL -t nat | grep --color=never -v pkts | grep --color=never .
+		sleep 2
+	done
+}
+
+######################################################
+# Show details of the firewalld
+# INPUT: NONE
+# OUTPUT: ToScreen
+function fwi {
+	CheckObject "PROG" "firewall-cmd" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Firewall command utility \"firewall-cmd\" could not be found."
+		return 1
+	fi
+
+	# Is the firewall running?
+	if [[ $(firewall-cmd --state) == "running" ]]; then
+		ColorText "INFO" "Firewalld reported running."
+		# List out the firewall information.
+		for EachZone in $(firewall-cmd --get-zones); do
+			firewall-cmd --zone ${EachZone} --list-all \
+				| awk 'function green(s){printf "\033[1;32m" s "\033[0m "};function blue(s){printf "\033[1;34m" s "\033[0m "}{if(/^[[:alpha:]]/){if(/active/){print green($0)}else{print blue($0)}}else if(!/ $/&&/ /){print}}'
+		done
+	else
+		ColorText "WARNING" "Firewalld reported a non-running state"
+		return 1
+	fi
+}
+
+######################################################
+# To install basic networking files in CentOS7
+# INPUT: NONE
+# OUTPUT: ToDisk > NetworkFiles
+function InstNet {
+	CheckObject "FILE" "${NetworkHome}" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Network home \"${NetworkHome}\" cannot be found."
+		return 1
+	fi
+
+	# Get the Interfaces available - into an array and run.
+	local ThisSystem ThisDeviceInfo
+	ColorText "INFO" "Configuration changes will occur in \"${NetworkHome}\"."
+	ThisSystem=( $(GetSystemInterfaces) )
+	# Get the selection.
+	while true; do
+
+		# Reset.
+		unset ThisDeviceInfo
+
+		GetSelection "Select a device you wish to install." "${ThisSystem[*]} QUIT" "NONE"
+
+		# Modifying LO is dangerous.
+		if [[ ${UserResponse%%___*} == "lo" ]]; then
+			ColorText "WARNING" "Modifications to \"lo\" are not allowed."
+			continue
+		elif [[ ${UserResponse} == "QUIT" ]]; then
+			return 0
+		fi
+
+		if [[ -f ${NetworkHome}/ifcfg-${UserResponse%%___*} ]]; then
+			ColorText "INFO" "Existing configuration for \"${UserResponse%%___*}\" was found."
+			cat ${NetworkHome}/ifcfg-${UserResponse%%___*}
+		fi
+
+		# INFO: 0=FileName
+		# INFO: 1=DEVICE, 2=HWADDR, 3=TYPE, 4=NM_CONTROLLED, 5=IPV4_FAILURE_FATAL, 6=IPV6INIT, 7=ONBOOT, 8=BOOTPROTO
+		# INFO: 9=GATEWAY 10=IPADDR, 11=NETMASK, 12=PEERDNS, 13=DNS1, 14=DNS2, 15=ZONE
+		ThisDeviceInfo[0]="${NetworkHome}/ifcfg-${UserResponse%%___*}"
+		ThisDeviceInfo[1]="DEVICE=${UserResponse%%___*}"
+		ThisDeviceInfo[2]="HWADDR=${UserResponse##*___}"
+		ThisDeviceInfo[3]="TYPE=Ethernet"
+		GetYorN "Is this device contolled by NetworkManager?" "NONE"
+		if [[ $? -eq 0 ]]; then
+			ThisDeviceInfo[4]="NM_CONTROLLED=yes"
+		else
+			ThisDeviceInfo[4]="NM_CONTROLLED=no"
+		fi
+		ThisDeviceInfo[5]="IPV4_FAILURE=no"
+		ThisDeviceInfo[6]="IPV6_INIT=no"
+		ThisDeviceInfo[7]="ONBOOT=yes"
+
+		# Get the variable information from the user.
+		GetYorN "Does this device receive DHCP?" "NONE"
+		if [[ $? -eq 0 ]]; then
+			ThisDeviceInfo[8]="BOOTPROTO=dhcp"
+			ThisDeviceInfo[9]="BYPASS"
+			ThisDeviceInfo[10]="BYPASS"
+			ThisDeviceInfo[11]="BYPASS"
+			ThisDeviceInfo[12]="BYPASS"
+			ThisDeviceInfo[13]="BYPASS"
+			ThisDeviceInfo[14]="BYPASS"
+		else
+			ThisDeviceInfo[8]="BOOTPROTO=static"
+			GetYorN "Does this device provide a default gateway?" "No"
+			if [[ $? -eq 0 ]]; then
+				GetResponse "What is the default gateway IP?" "NONE"
+				while ! echo ${UserResponse} | grep -qoE "${ValidIP}"; do
+					GetResponse "Invalid.  Try again." "NONE"
+				done
+				ThisDeviceInfo[9]="GATEWAY=${UserResponse}"
+			else
+				ThisDeviceInfo[9]="BYPASS"
+			fi
+			GetResponse "What is the device IP?" "NONE"
+			while ! echo ${UserResponse} | grep -qoE "${ValidIP}"; do
+				GetResponse "Invalid.  Try again." "NONE"
+			done
+			ThisDeviceInfo[10]="IPADDR=${UserResponse}"
+			GetResponse "What is the device NETMASK (NOT PREFIX)?" "NONE"
+			while ! echo ${UserResponse} | grep -qoE "${ValidIP}"; do
+				GetResponse "Invalid.  Try again." "NONE"
+			done
+			ThisDeviceInfo[11]="NETMASK=${UserResponse}"
+			GetResponse "What is the DNS IP?" "NONE"
+			while ! echo ${UserResponse} | grep -qoE "${ValidIP}"; do
+				GetResponse "Invalid.  Try again." "NONE"
+			done
+			ThisDeviceInfo[12]="PEERDNS=no"
+			ThisDeviceInfo[13]="DNS1=${UserResponse}"
+			while ! echo ${UserResponse} | grep -qoE "${ValidIP}"; do
+				GetResponse "Invalid.  Try again." "NONE"
+			done
+			if GetYorN "Is there a secondary DNS?" "No"; then
+				GetResponse "What is the secondary DNS IP?" "NONE"
+				while ! echo ${UserResponse} | grep -qoE "${ValidIP}"; do
+					GetResponse "Invalid.  Try again." "NONE"
+				done
+				ThisDeviceInfo[14]="DNS2=${UserResponse}"
+			fi
+		fi
+
+		# Firewalld zone information.
+		if [[ $(firewall-cmd --state 2>/dev/null) == "running" ]]; then
+			ColorText "INFO" "Firewalld reported running."
+			if GetYorN "Is there FirewallD Zone?" "No"; then
+				local AllZones=$(find /usr/lib/firewalld/zones/ -type f -exec basename {} \; | awk '{gsub(".xml",""); print}')
+				GetSelection "What is the FirewallD Zone name?" "${AllZones:-NONE}" "NONE"
+				ThisDeviceInfo[15]="ZONE=${UserResponse}"
+			fi
+		else
+			ColorText "INFO" "Firewalld was not running or available."
+			ThisDeviceInfo[15]="ZONE=BYPASS"
+		fi
+
+		# Are we ready?
+		for ((i=0;i<=${#ThisDeviceInfo[*]};i++)); do
+			[[ ${ThisDeviceInfo[${i}]} == "BYPASS" ]] \
+				&& continue
+			ColorText "INFO" "${ThisDeviceInfo[${i}]}"
+		done
+
+		# Write, or not to write, that is the question.
+		GetYorN "Are you ready to write the changes?" "NONE"
+		if [[ $? -eq 0 ]]; then
+			if [[ -f ${ThisDeviceInfo[0]} ]]; then
+				ColorText "INFO" "Existing configuration is moved to a backup."
+				mv ${ThisDeviceInfo[0]} ${ThisDeviceInfo[0]//ifcfg/BACKUP_$(date +"%s")_ifcfg}
+			else
+				echo > ${ThisDeviceInfo[0]}
+			fi
+			for ((i=0;i<=${#ThisDeviceInfo[*]};i++)); do
+				[[ ${ThisDeviceInfo[${i}]} == "BYPASS" ]] \
+					&& continue
+				echo "${ThisDeviceInfo[${i}]}" >> ${ThisDeviceInfo[0]}
+			done
+		else
+			ColorText "INFO" "No changes were made."
+		fi
+
+	done
+}
+
+######################################################
+# To install basic networking files in CentOS7
+# INPUT: Rules File
+# OUTPUT: ToScreen > FirewallD Direct Syntax
+function fwBuild {
+	CheckObject "FILE" "$(pwd)/fwrules.txt" "QUIET"
+	if [[ $? -ne 0 ]]; then
+		ColorText "CRITICAL" "Firewall Rules file \"./fwrules.txt\" cannot be found."
+		ColorText "INFO" "The \"fwrules.txt\" file should consist of rules in the following format:"
+		ColorText "INFO" "  [PROTOCOL-TCP/UDP] [IP(s)]/[PREFIX] [PORT(s)]"
+		ColorText "INFO" "[EX] tcp 10.1.0.0/23 22,1494,3389-4000"
+		return 1
+	fi
+
+	# Iteration.
+	local Iterations=0 ThisProtocol ThisIP ThisPrefix ThisPortRange ThisOutput EachElement
+
+	# Intro.
+	ColorText "INFO" "The following can be pasted into the FirewallD direct.xml file."
+
+	# This chain is first.
+	echo '  <chain ipv="ipv4" table="raw" chain="CUSTOMALLOW">'
+
+	# Protect all the local IPs.
+	#LocalIPs=( $(ifconfig -a | awk '/'"${ValidIP}"'/{print $2}' 2>/dev/null) )
+	local LocalIPs='127.0.0.1'
+	for ThisIP in ${LocalIPs[*]}; do
+		echo '  <rule ipv="ipv4" table="raw" chain="CUSTOMALLOW" priority="'"${Iterations}"'">-d '"${ThisIP}/32"' -j RETURN</rule>'
+		let Iterations+=1
+	done
+
+	# Read each line of the file.
+	while read EachLine; do
+
+		# Reset after each iteration.
+		unset ThisProtocol ThisIP ThisPrefix ThisPortRange ThisOutput
+		# Protocol IP[/PREFIX] Port[-Port]
+		# Place the line into an array.
+		EachElement=( ${EachLine} )
+		# Do not read comment lines.
+		# Element 0 is the protocol.
+		case ${EachElement[0]} in
+			'#')
+				continue
+				;;
+			tcp)
+				ThisProtocol="tcp"
+				;;
+			udp)
+				ThisProtocol="udp"
+				;;
+			*)
+				ColorText "ERROR"  "Expression error at \"${EachLine[*]}\" for PROTOCOL (Priority ${Iterations})."
+				ColorText "ERROR"  "Error is \"${EachElement[0]}\"."
+				return 1
+				;;
+		esac
+
+		# Element 1 is the IP and prefix.
+		ThisIP=( ${EachElement[1]/\// } )
+		if ! echo "${ThisIP[0]}" | grep -qoE ^${ValidIP}$; then
+			ColorText "ERROR" "Expression error at \"${EachLine[*]}\" for IP (Priority ${Iterations})."
+			ColorText "ERROR"  "Error is \"${ThisIP[0]}\"."
+			return 1
+		fi
+		if [[ ${ThisIP[1]} == "" ]]; then
+			ThisPrefix=32
+		else
+			if echo "${ThisIP[1]}" | grep -qoE ^${ValidPrefix}$; then
+				ThisPrefix=${ThisIP[1]}
+			else
+				ColorText "ERROR"  "Expression error at \"${EachLine[*]}\" for IP PREFIX (Priority ${Iterations})."
+				ColorText "ERROR"  "Error is \"${ThisIP[1]}\"."
+				return 1
+			fi
+		fi
+		# Element 3 is the port range.
+		ThisPortRange=${EachElement[2]:-ALL}
+		# Read out.
+		if [[ ${ThisPortRange} == "ALL" ]]; then
+			echo '  <rule ipv="ipv4" table="raw" chain="CUSTOMALLOW" priority="'"${Iterations}"'">-d '"${ThisIP}/${ThisPrefix}"' -p '"${ThisProtocol}"' -j RETURN</rule>'
+		else
+			echo '  <rule ipv="ipv4" table="raw" chain="CUSTOMALLOW" priority="'"${Iterations}"'">-d '"${ThisIP}/${ThisPrefix}"' -p '"${ThisProtocol}"' -m multiport --dports='"${ThisPortRange}"' -j RETURN</rule>'
+		fi
+		let Iterations+=1
+
+	done <fwrules.txt
+
+	# Drop all packets which made it here.
+	echo '  <rule ipv="ipv4" table="raw" chain="CUSTOMALLOW" priority="'"${Iterations}"'">-j DROP</rule>'
+	# For all private networks, send to the CUSTOMALLOW table.
+	Iterations=0
+	for EachNetwork in 10.0.0.0/8 172.16.0.0/16 192.168.0.0/16; do
+		echo '  <rule ipv="ipv4" table="raw" chain="OUTPUT" priority="'"${Iterations}"'">-d '"${EachNetwork}"' -j CUSTOMALLOW</rule>'
+		let Iterations+=1
+	done
+
+	ColorText "INFO" "All rules have been output to the screen.  Done."
+}
+
+############################################################
+# Source Files
+############################################################
+[[ -f .VTC-Generic ]] && . .VTC-Generic
+
+########################################################################################
+# EOF
+########################################################################################
